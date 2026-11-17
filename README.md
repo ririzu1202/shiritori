@@ -30,6 +30,7 @@ flowchart LR
   W["⚛️ 브라우저<br/>(미니 리액트)"] -- "fetch /api" --> G["🎮 게임 서버"]
   G == "판 진행 · 제한 시간 · 캐시 · 잠금 · 세션" ==> R["🧠 미니 레디스<br/>메모리, 잠깐 보관"]
   G -. "캐시에 없을 때만" .-> D["🗄️ 미니 DBMS<br/>파일, 오래 보관"]
+
   style R fill:#DC382D,color:#fff,stroke:#A41E11
 ```
 
