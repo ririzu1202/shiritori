@@ -26,7 +26,7 @@
 import fs from 'node:fs';
 import { createCache } from '../redis/src/cache.js';
 import { quote } from './db.js';
-import { WORD_PATTERN, LEVELS, LIVES, POINTS, firstChar, lastChar, nextStartChars, rejectReason, pickWord, gradeOf } from './rules.js';
+import { WORD_PATTERN, LEVELS, LIVES, POINTS, letterPoints, firstChar, lastChar, nextStartChars, rejectReason, pickWord, gradeOf } from './rules.js';
 
 /** 파일에서 word 와 같은 줄을 모두 지운다 */
 function dropLine(file, word) {
@@ -110,7 +110,7 @@ export function createGameService({ redis, db, turnMs = 10_000, random = Math.ra
   }
 
   /** 판의 기록에 남길 한 줄: 누가, 무슨 단어를, 이을 수 있는 단어 수와 등급, 받은 점수 (시작 단어는 0점) */
-  const entry = (by, word, total, extra = {}) => ({ by, word, options: total, grade: gradeOf(total), points: by === 'start' ? 0 : POINTS[gradeOf(total)], ...extra });
+  const entry = (by, word, total, extra = {}) => ({ by, word, options: total, grade: gradeOf(total), points: by === 'start' ? 0 : POINTS[gradeOf(total)] + letterPoints(word.length), ...extra });
 
   /** 단어 등록. 이미 있는 일반 단어를 끝내기로 다시 등록하면 끝내기 단어로 바뀐다 */
   function register(raw, finisher = false) {

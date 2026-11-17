@@ -9,7 +9,7 @@
  *                 소녀 → '녀' 또는 '여'   (ㄴ → ㅇ)
  *   등급      : 낸 단어마다 "다음에 이을 수 있는 단어 수"로 등급을 매긴다 (GRADES)
  *                 0개 한방 · 1~10개 공격 · 11~100개 까다로움 · 101~1000개 보통 · 그 이상 넉넉
- *   점수      : 단어를 낼 때마다 등급에 따라 점수를 받는다 (POINTS)
+ *   점수      : 단어를 낼 때마다 등급에 따라 점수를 받고 (POINTS), 글자 수에 따라 더 받는다 (letterPoints: 10글자 300점을 기준으로 한 제곱 비율, 이후 글자당 +60점)
  *                 넉넉 100 · 보통 250 · 까다로움 500 · 공격 1,000 · 한방 2,000
  *   목숨      : 플레이어와 상대가 3개씩 갖는다 (LIVES). 이을 단어를 내지 못한 쪽이 하나를 잃고, 새 시작 단어로 이어 간다.
  *               어느 한쪽의 목숨이 0 이 되면 판이 끝난다
@@ -31,6 +31,10 @@ export const gradeOf = (options) => GRADES.find(([, max]) => options <= max)[0];
 
 // 등급별 점수: 이을 단어가 적은 단어일수록 점수가 높다 (최소 100점, 최대 2,000점. 한 등급 올라갈 때마다 약 2배)
 export const POINTS = { easy: 100, normal: 250, tricky: 500, attack: 1000, kill: 2000 };
+export const LONG_WORD = { length: 10, points: 300, perExtra: 60 };   // 긴 단어는 드물어서 크게 준다: 10글자가 300점이 기준이고, 그 뒤로 한 글자마다 +60점
+
+/** 글자 수에 따라 등급 점수에 더해 주는 점수. 9글자까지는 10글자 점수(300)에 대한 비율의 제곱이라 길수록 가파르게 오른다: 2글자 12, 5글자 75, 9글자 243, 10글자 300, 11글자 360, 12글자 420 … (시작 단어는 0점) */
+export const letterPoints = (length) => length < LONG_WORD.length ? Math.round(LONG_WORD.points * (length / LONG_WORD.length) ** 2) : LONG_WORD.points + (length - LONG_WORD.length) * LONG_WORD.perExtra;
 export const LIVES = 3;                  // 플레이어와 상대가 각각 갖는 목숨 수
 
 export const firstChar = (word) => word[0];

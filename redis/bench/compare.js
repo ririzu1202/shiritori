@@ -22,8 +22,8 @@ import { createStore } from '../src/store.js';
 import { createApiServer, listen, close } from '../src/api.js';
 import { createClient } from '../src/client.js';
 import { createCache } from '../src/cache.js';
-import { createProductDb, createProductFile } from '../demo/product-db.js';
-import { createProductApi } from '../demo/product-api.js';
+import { createProductDb, createProductFile } from '../src/__tests__/fixtures/product-db.js';
+import { createProductApi } from '../src/__tests__/fixtures/product-api.js';
 
 const PRODUCTS = 20000, POPULAR = 100, REQUESTS = 2000, CONCURRENCY = 20;
 

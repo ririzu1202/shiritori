@@ -263,7 +263,7 @@ test('순위: 점수가 높은 판이 위로 온다', async () => {
     const high = await other.service.start({ player: '높은점수', level: 'easy' });
     await other.service.play(high.game.id, '범인');                       // 한방 2,000점
     const { ranking } = await other.service.ranking();
-    assert.deepEqual(ranking.map((r) => [r.player, r.score]), [['높은점수', 2000], ['낮은점수', 0]]);
+    assert.deepEqual(ranking.map((r) => [r.player, r.score]), [['높은점수', 2012], ['낮은점수', 0]]);
   } finally { await other.stop(); }
 });
 
@@ -397,11 +397,11 @@ test('등급: 낸 단어마다 이을 수 있는 단어 수와 등급이 기록�
     const { game } = await other.service.start({ player: '등급', level: 'easy' });
     const first = await other.service.play(game.id, '기차');
     assert.deepEqual(first.game.history, [
-      { by: 'player', word: '기차', options: 3, grade: 'attack', points: 1000 },
-      { by: 'computer', word: '차표', options: 1, grade: 'attack', points: 1000, finisher: false },
+      { by: 'player', word: '기차', options: 3, grade: 'attack', points: 1012 },          // 공격 1000 + 2글자 12
+      { by: 'computer', word: '차표', options: 1, grade: 'attack', points: 1012, finisher: false },
     ]);
     const second = await other.service.play(game.id, '표범');
-    assert.deepEqual(second.game.history[2], { by: 'player', word: '표범', options: 0, grade: 'kill', points: 2000 });
+    assert.deepEqual(second.game.history[2], { by: 'player', word: '표범', options: 0, grade: 'kill', points: 2012 });
     assert.equal(second.game.result, 'win');
   } finally { await other.stop(); }
 });
@@ -445,12 +445,21 @@ test('점수: 등급에 따라 100 ~ 2,000점을 받고, 양쪽 점수가 따로
     assert.deepEqual(game.score, { player: 0, computer: 0 });
 
     const first = await other.service.play(game.id, '기차');              // 상대: 차표 (random 0 → 첫 후보)
-    assert.deepEqual(first.game.history.map((h) => [h.word, h.grade, h.points]), [['기차', 'tricky', 500], ['차표', 'attack', 1000]]);
-    assert.deepEqual(first.game.score, { player: 500, computer: 1000 });
+    assert.deepEqual(first.game.history.map((h) => [h.word, h.grade, h.points]), [['기차', 'tricky', 512], ['차표', 'attack', 1012]]);     // 등급 점수 + 2글자 12
+    assert.deepEqual(first.game.score, { player: 512, computer: 1012 });
 
     const second = await other.service.play(game.id, '표범');             // 한방
-    assert.deepEqual(second.game.score, { player: 2500, computer: 1000 });
-    assert.equal((await other.service.play(game.id, '없는말')).game.score.player, 2500);   // 거절된 단어는 점수가 없다
+    assert.deepEqual(second.game.score, { player: 2524, computer: 1012 });
+    assert.equal((await other.service.play(game.id, '없는말')).game.score.player, 2524);   // 거절된 단어는 점수가 없다
+  } finally { await other.stop(); }
+});
+
+test('점수: 글자 수가 늘면 더해지는 점수도 는다 (3글자 단어)', async () => {
+  const other = await startGameStack({ words: [['고구마'], ['마차']], lives: 3 });
+  try {
+    const { game } = await other.service.start({ player: '글자', level: 'easy' });
+    const turn = await other.service.play(game.id, '고구마');               // '마'로 시작하는 단어 1개 → 공격 1000 + 3글자 27
+    assert.equal(turn.game.history[0].points, 1027);
   } finally { await other.stop(); }
 });
 
@@ -483,8 +492,8 @@ test('목숨: 상대가 이을 단어가 없으면 상대가 하나를 잃고, 3
     const last = await other.service.play(game.id, '부엌');
     assert.deepEqual(last.game.lives, { player: 3, computer: 0 });
     assert.deepEqual([last.game.status, last.game.result, last.game.reason], ['over', 'win', 'computer-stuck']);
-    assert.equal(last.game.score.player, 6000);
-    assert.equal((await other.service.record(last.game.recordId)).record.score, 6000);   // 점수가 판 기록에 저장된다
+    assert.equal(last.game.score.player, 6036);
+    assert.equal((await other.service.record(last.game.recordId)).record.score, 6036);   // 점수가 판 기록에 저장된다
   } finally { await other.stop(); }
 });
 

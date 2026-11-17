@@ -14,8 +14,8 @@ import { createStore } from '../store.js';
 import { createApiServer, listen, close } from '../api.js';
 import { createClient } from '../client.js';
 import { createCache } from '../cache.js';
-import { createProductDb, createProductFile } from '../../demo/product-db.js';
-import { createProductApi } from '../../demo/product-api.js';
+import { createProductDb, createProductFile } from './fixtures/product-db.js';
+import { createProductApi } from './fixtures/product-api.js';
 
 let dir, db, redisServer, redis, apiServer, api;
 before(async () => {

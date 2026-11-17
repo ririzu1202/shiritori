@@ -1,7 +1,7 @@
 /* rules.js 단위 테스트: 두음법칙, 단어 판정, 상대의 단어 선택 */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { WORD_PATTERN, LEVELS, FINISHER_CHANCE, dueum, nextStartChars, rejectReason, pickWord, gradeOf } from '../rules.js';
+import { WORD_PATTERN, LEVELS, FINISHER_CHANCE, dueum, nextStartChars, rejectReason, pickWord, gradeOf, letterPoints } from '../rules.js';
 
 test('단어 형식: 한글 음절 2글자 이상만', () => {
   for (const ok of ['기차', '끝말잇기', '뷁뷁']) assert.equal(WORD_PATTERN.test(ok), true, ok);
@@ -115,4 +115,9 @@ test('상대의 선택: 난수에 따라 후보가 골고루 나온다', () => {
 test('등급: 이을 수 있는 단어 수로 다섯 등급을 나눈다', () => {
   const cases = [[0, 'kill'], [1, 'attack'], [10, 'attack'], [11, 'tricky'], [100, 'tricky'], [101, 'normal'], [1000, 'normal'], [1001, 'easy'], [50000, 'easy']];
   for (const [options, grade] of cases) assert.equal(gradeOf(options), grade, String(options));
+});
+
+test('글자 수 점수: 9글자까지는 10글자(300)에 대한 비율의 제곱, 10글자는 300점, 그 뒤로 한 글자마다 60점이 더해진다', () => {
+  const cases = [[2, 12], [3, 27], [4, 48], [5, 75], [9, 243], [10, 300], [11, 360], [12, 420], [20, 900]];
+  for (const [length, points] of cases) assert.equal(letterPoints(length), points, String(length));
 });

@@ -8,10 +8,6 @@ Node.js 20 이상이 필요하고, 설치할 패키지는 없다. (외부 라이
 ```bash
 npm start
 ```
-시연용: 미니 레디스 서버 + 이것을 캐시로 쓰는 상품 API를 함께 실행
-```bash
-npm run demo
-```
 테스트 (67개)
 ```bash
 npm test
@@ -32,7 +28,7 @@ npm run bench
 ```mermaid
 flowchart LR
   subgraph outside["외부 프로그램"]
-    A["상품 API<br/>demo/product-api.js"] --> B["cache.js<br/>getOrLoad"]
+    A["상품 API (테스트용)<br/>src/__tests__/fixtures/product-api.js"] --> B["cache.js<br/>getOrLoad"]
     B --> C["client.js<br/>연결 풀"]
   end
   subgraph redis["미니 레디스 서버"]
@@ -52,7 +48,7 @@ flowchart LR
 | `src/client.js` | 다른 프로그램에서 쓰는 클라이언트 (연결 풀) |
 | `src/cache.js` | 캐시로 쓰는 방법 (Cache-Aside) |
 | `server.js` | 서버 실행 진입점 |
-| `demo/` | 미니 레디스를 캐시로 쓰는 상품 API 예제 |
+| `src/__tests__/fixtures/` | 테스트·벤치용 상품 API와 원본 저장소 (미니 레디스를 캐시로 쓰는 예) |
 | `bench/compare.js` | 성능 비교 |
 
 ## 3. 해시 테이블의 설계와 주요 함수
