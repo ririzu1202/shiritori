@@ -1,7 +1,50 @@
-# 끝말잇기 — 미니 레디스 + 미니 DBMS + 미니 리액트
+<div align="center">
 
-등록해 둔 단어로 컴퓨터와 끝말잇기를 하는 웹 게임입니다.
-**미니 레디스**가 판의 진행(제한 시간, 나온 단어, 사전 캐시)을 맡고, **미니 DBMS**가 단어 사전과 판 기록을 보관하며, 화면은 **미니 리액트**로 그립니다.
+# 🔤 끝말잇기 (Shiritori)
+
+**직접 만든 Redis · DBMS · React, 세 개를 엮어 돌아가는 끝말잇기 웹 게임**
+
+![Node.js](https://img.shields.io/badge/Node.js-only-339933?logo=nodedotjs&logoColor=white)
+![Vanilla JS](https://img.shields.io/badge/Vanilla-JavaScript-F7DF1E?logo=javascript&logoColor=black)
+![dependencies](https://img.shields.io/badge/dependencies-0-blue)
+![tests](https://img.shields.io/badge/tests-238%20passing-brightgreen)
+
+</div>
+
+<br>
+
+| 🧠 미니 레디스 | 🗄️ 미니 DBMS | ⚛️ 미니 리액트 |
+|:---:|:---:|:---:|
+| 해시 테이블 · TTL · AOF | SQL 파서 · B+ 트리 · 스레드 풀 | VDOM · Diff · Patch · Hooks |
+| **판 진행 · 제한 시간 · 캐시** | **단어 사전 34만 개 · 판 기록** | **게임 화면 전체** |
+
+<br>
+
+<div align="center">
+
+| ⏱️ 제한 시간 | 📖 사전 | ⚡ 캐시 효과 | ✅ 테스트 |
+|:---:|:---:|:---:|:---:|
+| 10초 = 레디스 TTL | 약 340,000 단어 | 단어 확인 **3.5배** 빠름 | 85 + 67 + 86 = **238개** |
+
+</div>
+
+```mermaid
+flowchart LR
+  W["⚛️ 브라우저<br/>미니 리액트"] -- "fetch /api" --> G["🎮 게임 서버"]
+  G -- "제한 시간 · 캐시" --> R["🧠 미니 레디스<br/>:6380"]
+  G -- "SQL" --> D["🗄️ 미니 DBMS<br/>:4000"]
+```
+
+## 📑 목차
+
+| | | |
+|---|---|---|
+| [0. 실행](#0-실행-시-주의사항) | [4. 미니 DBMS](#4-미니-dbms-가-하는-일) | [8. 성능 비교](#8-성능-비교-실측) |
+| [1. 주요 기능](#1-주요-기능-5줄-요약) | [5. 판의 규칙](#5-판의-규칙-gamerulesjs-gameservicejs) | [9. 테스트](#9-테스트) |
+| [2. 전체 구조](#2-전체-구조) | [6. 단어를 냈을 때의 흐름](#6-단어-하나를-냈을-때의-흐름) | [10. 설계 이유](#10-어떻게-이-방식이-나오게-되었는가) |
+| [3. 미니 레디스](#3-미니-레디스가-하는-일) | [7. 화면 · 훅](#7-화면-webappjs) | [11. 한계](#11-한계) |
+
+---
 
 ## 0. 실행 시 주의사항
 
@@ -25,6 +68,9 @@ http://127.0.0.1:3000
 | 미니 레디스 | `http://127.0.0.1:6380` | 키-값 저장소 (기록 파일 `data/redis.aof`) |
 | 미니 DBMS | `http://127.0.0.1:4000` | SQL 실행 (테이블 파일 `data/db/`) |
 
+<details>
+<summary><b>포트 · 폴더 바꾸기, 제작자 계정, 명령 모음</b></summary>
+
 - 포트를 바꾸려면 `PORT=3100 REDIS_PORT=6381 DB_PORT=4001 node server.js`
 - 시험용 사전으로 켜려면 `node server.js --data <데이터 폴더> --words <단어 파일 폴더>`
 
@@ -42,6 +88,8 @@ npm run admin
 | `npm run words:reset` | 단어 테이블을 비우고 단어 파일로 다시 채우기 (서버를 끄고 실행) |
 | `npm test` / `npm run test:redis` / `npm run test:dbms` | 테스트 (7장) |
 | `npm run bench` | 캐시 유무 성능 비교 (8장) |
+
+</details>
 
 ## 1. 주요 기능 (5줄 요약)
 
@@ -74,7 +122,9 @@ flowchart LR
 | `words/` | 단어 파일과 단어 분석 스크립트 |
 | `bench/` | 캐시 성능 비교 |
 
-### 2-1. 게임 API (`game/server.js`)
+<details>
+<summary><b>2-1. 게임 API (<code>game/server.js</code>)</b></summary>
+
 
 | 메서드 · 주소 | 하는 일 | 로그인 |
 |---|---|---|
@@ -91,7 +141,12 @@ flowchart LR
 
 응답은 모두 JSON 이고, 오류는 `{ error }` 와 4xx/5xx 상태 코드로 돌려줍니다.
 
-### 2-2. 단어 사전
+
+</details>
+
+<details>
+<summary><b>2-2. 단어 사전</b></summary>
+
 
 한 줄에 하나씩 적혀 있고, 서버를 켤 때 새 단어가 사전에 들어갑니다.
 
@@ -104,6 +159,9 @@ flowchart LR
 
 - 사전 JSON 에서 `words.txt` 를 다시 만들려면 `node words/from-dictionary.js <사전.json> --mecab <mecab-ko-dic 폴더>` 를 실행합니다. 고르는 기준은 그 파일 머리말에 있습니다. 사람 이름은 유명인과 일반인을 구분할 정보가 없어 사전에서 가져오지 않고 `extra.txt` 에 적습니다.
 - 한방 · 공격 · 방어 단어 분석은 `node words/analyze.js` 로 하고, 결과는 `words/report/` 에 만들어집니다.
+
+
+</details>
 
 ## 3. 미니 레디스가 하는 일
 
@@ -122,12 +180,19 @@ flowchart LR
 | `session:<토큰>` | 제작자 로그인 상태 | **30분** | 만료 → 자동 로그아웃 |
 | `login:fail:<접속 주소>` | 로그인 실패 횟수 | 1분 | `incr` + 만료. 5번 틀리면 1분 동안 로그인 거절 |
 
-### 3-1. 해시 테이블 (`redis/src/hash-table.js`)
+<details>
+<summary><b>3-1. 해시 테이블 (<code>redis/src/hash-table.js</code>)</b></summary>
+
 
 키를 FNV-1a 해시 함수로 숫자로 바꾸고, 그 숫자로 칸(버킷) 번호를 정합니다. 같은 칸에 여러 키가 오면 연결 리스트로 잇습니다(체이닝).
 칸 수는 2의 거듭제곱이고, 저장된 키가 칸 수의 75%를 넘으면 2배로 늘립니다.
 
-### 3-2. 만료된 값 처리 — 제한 시간
+
+</details>
+
+<details>
+<summary><b>3-2. 만료된 값 처리 — 제한 시간</b></summary>
+
 
 ```
 플레이어 차례 시작:  set game:7:turn 1  (ttl 10초)
@@ -141,7 +206,12 @@ flowchart LR
 
 화면의 시계는 보여 주기용이고, 판정은 서버의 키 만료로 합니다. 화면 시계가 0이 되면 `GET /api/games/:id` 로 물어보고, 서버는 키가 사라져 있으면 그때 목숨을 뺍니다.
 
-### 3-3. 캐시와 무효화 (`redis/src/cache.js`, `game/service.js`)
+
+</details>
+
+<details>
+<summary><b>3-3. 캐시와 무효화 (<code>redis/src/cache.js</code>, <code>game/service.js</code>)</b></summary>
+
 
 ```
 단어 확인:  word:기차 가 레디스에 있나?
@@ -159,7 +229,12 @@ flowchart LR
 | 서버를 켤 때 | `word:`, `first:` 로 시작하는 키 전부 | `delByPrefix` (단어 파일이 바뀌었을 수 있음) |
 | 그 밖에 | 모든 캐시 | 만료 시간이 지나면 저절로 |
 
-### 3-4. 제작자 로그인 (`game/auth.js`)
+
+</details>
+
+<details>
+<summary><b>3-4. 제작자 로그인 (<code>game/auth.js</code>)</b></summary>
+
 
 ```
 로그인:     아이디·비밀번호 확인 → 무작위 토큰 생성 → set session:<토큰> { id }  (ttl 30분)
@@ -173,7 +248,12 @@ flowchart LR
 - 화면은 토큰을 `sessionStorage` 에 두고, 새로 고침하면 `/api/session` 으로 아직 살아 있는 로그인인지 물어봅니다.
 - 검사는 서버에서 합니다. 화면에서 등록 폼을 숨기는 것은 편의일 뿐이고, 토큰 없이 API 를 직접 호출해도 401 로 거절됩니다.
 
-### 3-5. 동시성
+
+</details>
+
+<details>
+<summary><b>3-5. 동시성</b></summary>
+
 
 미니 레디스는 명령을 한 번에 하나씩 실행합니다. 요청 본문을 다 읽은 뒤 저장소 함수를 동기 호출 한 번으로 실행하기 때문에, 요청이 겹쳐 들어와도 명령 사이에 다른 명령이 끼어들지 않습니다.
 
@@ -181,9 +261,17 @@ flowchart LR
 - **같은 판에 동시에 낸 단어**: `set game:7:lock 1 nx` 에 성공한 요청 하나만 판을 다룹니다. 8개를 동시에 보내도 1개만 처리되고 나머지는 409 입니다.
 - **단어 등록 · 삭제**: 게임 서버 안에서 Promise 한 줄로 세워 처리합니다. "있는지 확인 → INSERT" 사이에 다른 등록이 끼어들지 않아, 같은 단어를 동시에 20번 등록해도 1건만 들어갑니다.
 
-### 3-6. 서버가 꺼졌을 때 (`redis/src/aof.js`)
+
+</details>
+
+<details>
+<summary><b>3-6. 서버가 꺼졌을 때 (<code>redis/src/aof.js</code>)</b></summary>
+
 
 쓰기 명령을 `data/redis.aof` 에 한 줄씩 이어 적고, 서버를 켤 때 처음부터 다시 실행해 복구합니다. 만료 시각을 "남은 시간"이 아닌 "끝나는 시각"으로 적어 두어, 꺼져 있던 동안 지난 시간도 반영됩니다.
+
+
+</details>
 
 ## 4. 미니 DBMS 가 하는 일
 
@@ -289,7 +377,9 @@ flowchart TB
   web --> check --> reply --> render
 ```
 
-### 요청 + 판정
+<details>
+<summary><b>요청 + 판정</b></summary>
+
 
 1. **클릭 감지**: 미니 리액트가 루트에 하나만 달아 둔 click 리스너가 이벤트를 받고, 최신 VDOM 에서 `단어 내기` 버튼의 `events.click` 을 찾아 실행합니다. 입력 칸은 state 로 관리하지 않고, 이때 DOM 에서 값을 읽습니다. (Enter 키는 미니 리액트가 click 만 위임하므로 `useEffect` 에서 따로 연결합니다)
 2. **요청**: `api.playWord(7, '기차')` → `POST /api/games/7/words`
@@ -297,7 +387,12 @@ flowchart TB
 4. **시간 확인**: `ttl game:7:turn` 이 `-2`(키 없음)면 시간 초과입니다. 목숨을 하나 빼고 새 시작 단어를 놓은 뒤 응답합니다.
 5. **단어 판정**: 형식 → 시작 글자 → `get game:7:used:기차` → `word:기차` 캐시(없으면 DBMS 전체 탐색 후 60초 저장) 순서로 봅니다. 하나라도 걸리면 이유와 함께 응답하고 판은 그대로 둡니다.
 
-### 상대 차례 + 저장
+
+</details>
+
+<details>
+<summary><b>상대 차례 + 저장</b></summary>
+
 
 6. **받아들임**: `set game:7:used:기차`, `first:차` / `first:자`(두음법칙) 목록으로 이을 수 있는 단어 수를 세어 등급과 점수를 매깁니다.
 7. **상대 선택**: 그 목록에서 이번 판에 나온 단어를 빼고 `pickWord` 로 하나 고릅니다. 없으면 상대 목숨 -1.
@@ -305,11 +400,19 @@ flowchart TB
 9. **저장**: `set game:7`(판 상태, 30분), `set game:7:turn`(10초)로 새 차례를 열고, 잠금 키를 지웁니다.
 10. **응답**: `{ accepted, computer, game, trace }`. `trace` 에는 단계마다 캐시였는지 DBMS 였는지와 걸린 시간이 들어 있습니다.
 
-### 화면 반영
+
+</details>
+
+<details>
+<summary><b>화면 반영</b></summary>
+
 
 11. **배칭**: `setGame`, `setDeadline`, `setNow`, `setTrace`, `setNotice` 를 `batch` 로 묶어 리렌더는 한 번만 합니다.
 12. **리렌더 + Diff**: `App()` 이 다시 실행되고, `useMemo` 는 deps `[history]` 가 바뀌었으므로 큰 박스와 단어 줄 모양을 다시 만듭니다. Diff 결과대로 바뀐 부분만 Patch 합니다.
 13. **effect**: 시계 `useEffect` 의 deps `[gameId, playing, deadline]` 중 `deadline` 이 바뀌었으므로 이전 타이머를 정리하고 새 0.2초 타이머를 겁니다.
+
+
+</details>
 
 ## 7. 화면 (`web/app.js`)
 
@@ -349,6 +452,9 @@ flowchart TB
 | `npm run test:redis` | 미니 레디스 | 67 |
 | `npm run test:dbms` | 미니 DBMS | 86 |
 
+<details>
+<summary><b>테스트 파일별 검증 내용</b></summary>
+
 | 파일 (`game/__tests__/`) | 검증하는 것 |
 |---|---|
 | `rules.test.js` | 단어 형식, 두음법칙, 판정 순서, 난이도별 선택 확률, 등급, 글자 수 점수 |
@@ -369,6 +475,8 @@ flowchart TB
 | 무효화 | "없는 단어"로 캐시된 결과가 등록 직후 사라짐, 삭제한 단어를 상대가 바로 내지 않음 |
 | 동시성 | 같은 단어 동시 등록 20번 → 1건, 같은 판에 동시 제출 8번 → 1번만 처리, 12판 동시 진행 |
 | 엣지 케이스 | 빈 사전, 깨진 JSON, 작은따옴표가 든 이름, 폴더 밖 파일 요청, 끝난 판에 단어 내기 |
+
+</details>
 
 ## 10. 어떻게 이 방식이 나오게 되었는가
 
