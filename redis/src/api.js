@@ -8,7 +8,7 @@
  *   POST   /keys/:key/expire       만료 걸기       ← { ttl }                   → 200 { ok: true }  |  404
  *   DELETE /keys/:key/expire       만료 없애기     → 200 { ok: true | false }
  *   GET    /keys?prefix=           키 목록         → 200 { keys: [...] }
- *   DELETE /keys?prefix=product:   묶음 무효화     → 200 { deleted: n }
+ *   DELETE /keys?prefix=user:      묶음 무효화     → 200 { deleted: n }
  *   POST   /flush                  전부 지우기     → 200 { deleted: n }
  *   GET    /info                   상태            → 200 { keys, hits, misses, expired, table }
  *

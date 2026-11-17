@@ -10,7 +10,7 @@
  *     - 주기 삭제 (active) : sweepExpired 가 expires 테이블을 조금씩 훑어, 아무도 찾지 않는 만료 키도 지운다
  *
  *   무효화 (저장된 값을 더는 쓰지 않게 하기)
- *     del(key)  ·  delByPrefix('product:')  ·  expire(key, ms)  ·  flushAll()
+ *     del(key)  ·  delByPrefix('user:')  ·  expire(key, ms)  ·  flushAll()
  *
  *   동시성
  *     모든 명령은 중간에 await 가 없는 동기 함수다. Node.js 는 자바스크립트를 스레드 하나로 실행하므로

@@ -30,7 +30,7 @@ test('저장 → 조회 → 삭제', async () => {
 });
 
 test('객체·배열·숫자 값이 JSON 으로 오가도 그대로다', async () => {
-  const value = { id: 1, name: '상품', tags: ['a', 'b'], nested: { price: 1000 } };
+  const value = { id: 1, name: '철수', tags: ['a', 'b'], nested: { score: 1000 } };
   await redis.set('obj', value);
   await redis.set('num', 0);
   assert.deepEqual(await redis.get('obj'), value);
@@ -82,9 +82,9 @@ test('nx: 이미 있는 키면 409 이고 값이 바뀌지 않는다', async () 
 
 test('무효화: 접두사로 묶어 지우기, 전체 지우기', async () => {
   await redis.flushAll();
-  await redis.set('product:1', 1); await redis.set('product:2', 2); await redis.set('user:1', 3);
-  assert.deepEqual((await redis.keys('product:')).sort(), ['product:1', 'product:2']);
-  assert.equal(await redis.delByPrefix('product:'), 2);
+  await redis.set('post:1', 1); await redis.set('post:2', 2); await redis.set('user:1', 3);
+  assert.deepEqual((await redis.keys('post:')).sort(), ['post:1', 'post:2']);
+  assert.equal(await redis.delByPrefix('post:'), 2);
   assert.deepEqual(await redis.keys(), ['user:1']);
   assert.equal(await redis.flushAll(), 1);
   assert.deepEqual(await redis.keys(), []);

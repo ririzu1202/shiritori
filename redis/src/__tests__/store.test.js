@@ -68,7 +68,7 @@ test('incr: 없는 키는 0 에서 시작하고, 정수가 아니면 오류', ()
 
 test('keys: 접두사로 걸러 준다', () => {
   const { store } = setup();
-  store.set('user:1', 1); store.set('user:2', 2); store.set('product:1', 3);
+  store.set('user:1', 1); store.set('user:2', 2); store.set('post:1', 3);
   assert.deepEqual(store.keys('user:').sort(), ['user:1', 'user:2']);
   assert.equal(store.keys().length, 3);
 });
@@ -159,8 +159,8 @@ test('주기 삭제: 만료되지 않은 키는 건드리지 않는다', () => {
 
 test('무효화: delByPrefix 는 접두사가 같은 키만 지운다', () => {
   const { store } = setup();
-  store.set('product:1', 1); store.set('product:2', 2); store.set('user:1', 3);
-  assert.equal(store.delByPrefix('product:'), 2);
+  store.set('post:1', 1); store.set('post:2', 2); store.set('user:1', 3);
+  assert.equal(store.delByPrefix('post:'), 2);
   assert.deepEqual(store.keys(), ['user:1']);
 });
 
