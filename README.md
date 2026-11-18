@@ -1,6 +1,6 @@
 # 🧠 끝말잇기로 보는 미니 레디스
 
-**끝말잇기의 규칙 하나하나를, 직접 만든 Redis 의 기능으로 돌립니다**
+**끝말잇기의 규칙 Redis 의 기능으로 돌립니다**
 
 ![Node.js](https://img.shields.io/badge/Node.js-only-339933?logo=nodedotjs&logoColor=white)
 ![dependencies](https://img.shields.io/badge/dependencies-0-blue)
