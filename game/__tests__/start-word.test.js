@@ -22,7 +22,7 @@ test('시작 단어: 4글자 이상과 이을 수 없는 단어는 건너뛰고,
     const picks = trace.filter((t) => t.label.startsWith('시작 단어 뽑기'));
     assert.equal(picks.length, 3);
     for (const pick of picks) assert.equal(pick.plan, 'INDEX_POINT');             // 단어 번호로 찾으므로 B+ 트리 인덱스를 쓴다
-    assert.equal(stack.store.get('game:' + game.id + ':used:기차'), 1);            // 시작 단어도 이번 판에 나온 단어다
+    assert.equal(stack.store.get('game:' + game.id + ':used:기차'), 1);            // 시작 단어도 이번 라운드에 나온 단어다
   } finally { await stack.stop(); }
 });
 
@@ -58,7 +58,7 @@ test('시작 단어: 쓸 수 있는 단어가 없으면 30번 뽑아 보고 포�
     const { game, trace } = await stack.service.start({ player: '없음' });
     assert.deepEqual([game.history, game.need], [[], null]);
     assert.equal(trace.filter((t) => t.label.startsWith('시작 단어 뽑기')).length, 30);
-    assert.equal((await stack.service.play(game.id, '범인')).accepted, true);       // 아무 등록 단어로 시작할 수 있다
+    assert.equal((await stack.service.play(game.id, '끝말잇기')).accepted, true);   // 아무 등록 단어로 시작할 수 있다 (한방 단어는 빼고)
   } finally { await stack.stop(); }
 });
 

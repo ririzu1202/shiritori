@@ -21,6 +21,15 @@
  *     GET  /api/records/:id          기록 번호로 판 기록 조회                    → { record, trace }
  *     GET  /api/status               미니 레디스 · 미니 DBMS 상태
  *
+ *   같이 하는 방 (rooms.js). 방 안의 요청은 머리말 "X-Room-Token: <토큰>" 으로 누구인지 알린다
+ *     GET  /api/rooms                방 목록                                    → { rooms }
+ *     POST /api/rooms                방 만들기        ← { name, player, lives, round, rounds }  → { room, token }
+ *     GET  /api/rooms/:id            방 상태                                    → { room }
+ *     POST /api/rooms/:id/join       들어가기         ← { player }              → { room, token }
+ *     POST /api/rooms/:id/start      시작 (방장)                                → { room }
+ *     POST /api/rooms/:id/words      단어 내기        ← { word }                → { accepted, reject, room }
+ *     POST /api/rooms/:id/leave      나가기                                     → { left, room }
+ *
  *   판의 규칙과 저장은 service.js 가 맡는다. 여기서는 주소를 보고 맞는 함수를 부르기만 한다.
  * ====================================================================== */
 
@@ -68,8 +77,9 @@ function readStatic(root, relative) {
  * webDir  : 화면 파일 폴더
  * libDir  : 미니 리액트 src 폴더 (/mini-react/ 로 내려 준다)
  * auth    : createAuth() 의 결과. 주면 단어 등록에 로그인을 요구한다
+ * rooms   : createRoomService() 의 결과. 주면 같이 하는 방 API 를 연다
  */
-export function createGameServer({ service, webDir, libDir, auth = null }) {
+export function createGameServer({ service, webDir, libDir, auth = null, rooms = null }) {
   webDir = path.resolve(webDir);
   libDir = path.resolve(libDir);
 
@@ -89,6 +99,22 @@ export function createGameServer({ service, webDir, libDir, auth = null }) {
       if (parts.length === 2) { if (method !== 'GET') throw wrong(); return service.get(Number(id)); }
       if (parts.length === 3 && action === 'words') { if (method !== 'POST') throw wrong(); return service.play(Number(id), (await readJson(req)).word); }
       if (parts.length === 3 && action === 'giveup') { if (method !== 'POST') throw wrong(); return service.giveUp(Number(id)); }
+    }
+    if (rooms && head === 'rooms') {
+      const roomToken = req.headers['x-room-token'] || null;
+      if (parts.length === 1) {
+        if (method === 'GET') return rooms.list();
+        if (method === 'POST') return rooms.create(await readJson(req));
+        throw wrong();
+      }
+      if (/^\d+$/.test(id ?? '')) {
+        if (parts.length === 2) { if (method !== 'GET') throw wrong(); return rooms.get(Number(id), roomToken); }
+        if (parts.length === 3 && method !== 'POST') throw wrong();
+        if (parts.length === 3 && action === 'join') return rooms.join(Number(id), await readJson(req));
+        if (parts.length === 3 && action === 'start') return rooms.start(Number(id), roomToken);
+        if (parts.length === 3 && action === 'words') return rooms.play(Number(id), roomToken, (await readJson(req)).word);
+        if (parts.length === 3 && action === 'leave') return rooms.leave(Number(id), roomToken);
+      }
     }
     if (head === 'words' && parts.length === 1) {
       if (method === 'GET') return service.words(url.searchParams.get('first') ?? '');     // first: 찾을 단어의 앞부분 (한 글자 이상)

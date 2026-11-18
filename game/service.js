@@ -6,18 +6,22 @@
  *     games  끝난 판의 기록                       first:<글자>            그 글자로 시작하는 단어 캐시   60초
  *                                                 ranking                 기록 상위 10개 캐시           5초
  *                                                 game:<번호>             진행 중인 판의 상태 (목숨, 점수, 낸 단어)  30분
- *                                                 game:<번호>:used:<단어>  이번 판에 나온 단어           30분
+ *                                                 game:<번호>:used:<단어>  이번 라운드에 나온 단어       30분 (새 라운드에 지움)
  *                                                 game:<번호>:turn        플레이어 차례. 사라지면 시간 초과  10초
  *                                                 game:<번호>:lock        한 판을 한 번에 한 요청만 다루게 하는 잠금 (nx)
  *                                                 game:seq / stats:games  판 번호 / 끝난 판 수 (incr)
  *
  *   단어 확인   : 캐시(word:…)에 있으면 그대로, 없으면 DBMS 를 선형 탐색하고 결과를 캐시에 넣는다
  *   단어 등록   : DBMS 에 INSERT 한 뒤 word:<단어> 와 first:<첫 글자> 캐시를 지운다 (무효화)
+ *   상대의 선택 : 후보마다 등급을 매겨 센 등급부터 확률을 굴린다 (rules.js pickWord). 등급은 메모리의 등급 표(글자 → 단어 수)로 매긴다.
+ *                 등급 표는 사전을 처음 한 번 id 범위로 나눠 끝까지 읽어 세고, 그 뒤로는 등록 · 삭제할 때 숫자만 고친다
  *   단어 삭제   : 미니 DBMS 에는 DELETE 가 없다. 그래서 같은 단어를 removed = 1 로 한 줄 더 INSERT 한다 ("지웠다"는 기록).
  *                 같은 단어가 여러 줄이면 가장 나중 줄을 따르므로, 그 단어는 없는 단어가 된다. 캐시도 함께 지운다
  *   목숨        : 이을 단어를 내지 못한 쪽(시간 초과, 이을 단어 없음)이 목숨 하나를 잃고, 새 시작 단어로 이어 간다.
  *                 목숨이 0 이 되면 판이 끝난다
+ *   새 라운드   : 끄투처럼 나온 단어를 비운다 (그 판의 used 키를 prefix 로 한꺼번에 지운다)
  *   판이 끝나면 : games 에 INSERT, 그 판의 used 키를 prefix 로 한꺼번에 지우고, ranking 캐시를 지운다
+ *                 목숨이 0 이 되면 끝난다 (라운드 수는 따로 정하지 않는다. 목숨 수가 판의 길이를 정한다)
  *
  *   모든 응답의 trace 에는 "어디서 값을 가져왔는지"가 담긴다. 화면이 이것을 그대로 보여 준다.
  *     { label, key, source: 'cache' | 'db' | 'redis', plan?, ms }
@@ -26,7 +30,7 @@
 import fs from 'node:fs';
 import { createCache } from '../redis/src/cache.js';
 import { quote } from './db.js';
-import { WORD_PATTERN, LEVELS, LIVES, POINTS, letterPoints, firstChar, lastChar, nextStartChars, rejectReason, pickWord, gradeOf } from './rules.js';
+import { WORD_PATTERN, LEVELS, ROUND_TIMES, DEFAULT_ROUND, LIVES, MAX_LIVES, POINTS, letterPoints, firstChar, lastChar, nextStartChars, rejectReason, pickWord, gradeOf } from './rules.js';
 
 /** 파일에서 word 와 같은 줄을 모두 지운다 */
 function dropLine(file, word) {
@@ -51,11 +55,13 @@ const START_TRIES = 30;              // 시작 단어를 뽑아 보는 횟수
  * db        : game/db.js 의 클라이언트
  * turnMs    : 한 차례의 제한 시간
  * random    : 상대가 단어를 고를 때, 시작 단어를 뽑을 때 쓰는 난수 함수
- * lives     : 플레이어와 상대가 각각 갖는 목숨 수
+ * lives     : 판을 시작할 때 목숨 수를 고르지 않으면 쓰는 값 (플레이어와 상대가 각각 갖는 목숨 수)
  * randomStart : 판을 열 때 2~3글자 시작 단어를 무작위로 제시할지 (false 면 플레이어가 아무 단어로 시작)
+ * secondMs  : 라운드 시간 1초의 길이 (테스트에서 줄여 쓴다)
+ * coin      : 판의 첫 라운드에 누가 먼저 낼지 정하는 난수 (0.5 미만이면 플레이어)
  * wordFiles : { words, finishers, removed } 화면에서 등록·삭제한 단어를 이어 적을 파일 (없으면 적지 않는다)
  */
-export function createGameService({ redis, db, turnMs = 10_000, random = Math.random, wordFiles = null, randomStart = true, lives = LIVES }) {
+export function createGameService({ redis, db, turnMs = 10_000, random = Math.random, wordFiles = null, randomStart = true, lives = LIVES, secondMs = 1000, coin = random }) {
   const wordCache = createCache(redis, { ttl: 60_000 });
   const rankCache = createCache(redis, { ttl: 5_000 });
   let registering = Promise.resolve();     // 단어 등록을 한 줄로 세운다 ("있는지 확인 → INSERT" 사이에 다른 등록이 끼어들지 않게)
@@ -104,10 +110,58 @@ export function createGameService({ redis, db, turnMs = 10_000, random = Math.ra
     const lists = [];
     for (const char of nextStartChars(word)) lists.push(await wordsStartingWith(char, trace));
     const all = lists.flat();
-    // total: 사전에 있는 전체 개수 (등급을 매길 때 쓴다. 이번 판에 써서 줄어든 것은 반영하지 않는다)
-    // open : 그중 이번 판에 아직 나오지 않아 실제로 낼 수 있는 단어
+    // total: 사전에 있는 전체 개수 (등급을 매길 때 쓴다. 이번 라운드에 써서 줄어든 것은 반영하지 않는다)
+    // open : 그중 이번 라운드에 아직 나오지 않아 실제로 낼 수 있는 단어
     return { total: all.length, open: all.filter((c) => !used.has(c.word)) };
   }
+
+  /*
+   * 등급 표: 글자 → 그 글자로 시작하는 (지워지지 않은) 단어 수.
+   * 상대는 후보마다 등급을 알아야 고를 수 있다 (pickWord). 후보가 수백 개이고 끝 글자도 제각각이라 글자마다 first:<글자> 를 불러오면
+   * 한 차례에 DBMS 를 수백 번 부를 수 있다. 그래서 사전을 한 번 끝까지 읽어 세어 두고, 등록 · 삭제 때는 숫자만 고친다.
+   * 한 번에 돌려받는 레코드 수에 상한(maxRows)이 있어서 id 범위로 나눠 읽는다 (WHERE id > 마지막 번호 → B+ 트리 INDEX_RANGE)
+   */
+  let gradeCounts = null;                  // 다 센 표 (Map). 아직 안 셌으면 null
+  let gradeCounting = null;                // 세는 중인 작업 (Promise)
+
+  async function countFirsts() {
+    const latest = new Map();              // 같은 단어는 번호가 가장 큰 줄만 남긴다 (findWord 와 같은 규칙)
+    for (let last = 0; ;) {
+      const result = await db.query('SELECT id, word, first, removed FROM words WHERE id > ' + last);
+      for (const row of result.objects) {
+        const prev = latest.get(row.word);
+        if (!prev || prev.id < row.id) latest.set(row.word, row);
+        last = Math.max(last, row.id);
+      }
+      if (!result.truncated || result.objects.length === 0) break;      // 잘리지 않았으면 끝까지 읽은 것이다
+    }
+    const counts = new Map();
+    for (const row of latest.values()) if (row.removed !== 1) counts.set(row.first, (counts.get(row.first) ?? 0) + 1);
+    return counts;
+  }
+
+  /** 등급 표를 돌려준다 (처음이면 센다). 등록 · 삭제와 같은 줄(registering)에 세워, 세는 도중의 등록이 빠지거나 두 번 세지지 않게 한다 */
+  function gradeTable() {
+    if (gradeCounts) return Promise.resolve(gradeCounts);
+    if (!gradeCounting) {
+      const job = registering.then(countFirsts).then((counts) => {
+        if (gradeCounting === job) gradeCounts = counts;                   // 세는 동안 표를 버렸으면(clearWordCache) 쓰지 않는다
+        return counts;
+      });
+      gradeCounting = job;
+      registering = job.catch(() => {});
+      job.catch(() => { if (gradeCounting === job) gradeCounting = null; });   // 실패하면 다음에 다시 센다
+    }
+    return gradeCounting;
+  }
+
+  /** 등록 · 삭제 뒤 등급 표의 숫자를 고친다. 아직 다 세지 않았으면 할 일이 없다 (나중에 셀 때 DBMS 에서 반영된다) */
+  function bumpCount(char, delta) {
+    if (gradeCounts) gradeCounts.set(char, (gradeCounts.get(char) ?? 0) + delta);
+  }
+
+  /** 등급 표 → (단어 → 등급 이름). 셈은 continuations 의 total 과 같다 (끝 글자 + 두음법칙 글자로 시작하는 단어 수, 이번 라운드에 나온 단어 포함) */
+  const graderOf = (counts) => (word) => gradeOf(nextStartChars(word).reduce((sum, char) => sum + (counts.get(char) ?? 0), 0));
 
   /** 판의 기록에 남길 한 줄: 누가, 무슨 단어를, 이을 수 있는 단어 수와 등급, 받은 점수 (시작 단어는 0점) */
   const entry = (by, word, total, extra = {}) => ({ by, word, options: total, grade: gradeOf(total), points: by === 'start' ? 0 : POINTS[gradeOf(total)] + letterPoints(word.length), ...extra });
@@ -126,6 +180,7 @@ export function createGameService({ redis, db, turnMs = 10_000, random = Math.ra
         [quote(word), quote(firstChar(word)), quote(lastChar(word)), finisher ? 1 : 0].join(', ') + ')');
       const invalidated = ['word:' + word, 'first:' + firstChar(word)];
       for (const key of invalidated) await wordCache.invalidate(key);      // 원본이 바뀌었으니 옛 캐시를 지운다
+      if (!existing.known) bumpCount(firstChar(word), +1);                  // 끝내기로 바꾸기만 한 단어는 개수가 그대로다
 
       if (wordFiles) {
         fs.appendFileSync(finisher ? wordFiles.finishers : wordFiles.words, '\n' + word + '\n');
@@ -149,6 +204,7 @@ export function createGameService({ redis, db, turnMs = 10_000, random = Math.ra
         [quote(word), quote(firstChar(word)), quote(lastChar(word)), 0, 1].join(', ') + ')');
       const invalidated = ['word:' + word, 'first:' + firstChar(word)];
       for (const key of invalidated) await wordCache.invalidate(key);
+      bumpCount(firstChar(word), -1);
 
       if (wordFiles && wordFiles.removed) fs.appendFileSync(wordFiles.removed, '\n' + word + '\n');   // 사전을 다시 만들어도 되살아나지 않게 적어 둔다
       return { removed: true, word, id: inserted.firstId, invalidated, message: "'" + word + "'을(를) 삭제했습니다" };
@@ -168,8 +224,33 @@ export function createGameService({ redis, db, turnMs = 10_000, random = Math.ra
   /** 화면에 보낼 모양: 상태 + 남은 시간 */
   async function view(state) {
     const remainingMs = state.status === 'playing' ? Math.max(0, await redis.ttl(turnKey(state.id))) : 0;
-    return { ...state, remainingMs, turnMs };
+    const used = (state.turnLimitMs ?? turnMs) - remainingMs;                // 이번 차례에 쓴 시간
+    const playing = state.status === 'playing';
+    // remainingMs      : 실제로 시간 초과가 되는 때까지 (차례 키의 남은 시간 = min(차례, 라운드))
+    // turnRemainingMs  : 화면의 차례 막대. 차례마다 10초로 다시 차고, 라운드 시간과 따로 줄어든다
+    // roundRemainingMs : 화면의 라운드 막대
+    const turnRemainingMs = playing ? Math.max(0, turnMs - used) : 0;
+    const roundRemainingMs = playing && state.roundLeftMs !== undefined ? Math.max(0, state.roundLeftMs - used) : 0;
+    return { ...state, remainingMs, turnRemainingMs, roundRemainingMs, turnMs };
   }
+
+  /**
+   * 플레이어 차례를 연다: 차례 키에 min(한 차례 제한, 라운드 남은 시간)을 건다. 이 키가 사라지면 시간 초과다.
+   * 판 상태(turnLimitMs)를 바꾸므로 판 상태를 저장하기 전에 부른다
+   */
+  function turnLimit(state) {
+    state.turnLimitMs = Math.max(1, Math.min(turnMs, state.roundLeftMs ?? Infinity));
+    return state.turnLimitMs;
+  }
+  const openTurn = (state) => redis.set(turnKey(state.id), 1, { ttl: state.turnLimitMs });
+
+  /** 단어를 받아들이면, 이번 차례에 쓴 시간을 라운드 시간에서 뺀다 (remaining: 차례 키의 남은 시간) */
+  function spend(state, remaining) {
+    if (state.roundLeftMs !== undefined) state.roundLeftMs = Math.max(0, state.roundLeftMs - (state.turnLimitMs - remaining));
+  }
+
+  /** 시간 초과의 이유: 라운드 시간이 차례 제한보다 먼저 끝났으면 'round-time', 아니면 'timeout' */
+  const timeoutReason = (state) => (state.turnLimitMs < turnMs ? 'round-time' : 'timeout');
 
   /** 한 판을 한 번에 한 요청만 다루게 한다. 잠금 키를 nx(없을 때만 저장)로 만든 요청만 들어간다 */
   async function withLock(id, run) {
@@ -199,11 +280,11 @@ export function createGameService({ redis, db, turnMs = 10_000, random = Math.ra
     return state;
   }
 
-  /** 이번 판에 나온 단어들 */
+  /** 이번 라운드에 나온 단어들 */
   const usedWordsOf = async (id) => new Set((await redis.keys(usedPrefix(id))).map((key) => key.slice(usedPrefix(id).length)));
 
   /**
-   * 시작 단어를 무작위로 고른다: 2~3글자이고, 이번 판에 아직 나오지 않았고, 이을 수 있는 단어가 하나 이상 있는 것.
+   * 시작 단어를 무작위로 고른다: 2~3글자이고, 이번 라운드에 아직 나오지 않았고, 이을 수 있는 단어가 하나 이상 있는 것.
    * 단어 번호(id)를 무작위로 뽑아 WHERE id = ? 로 찾는다 → B+ 트리 인덱스를 타므로 사전이 커도 바로 찾는다.
    * 사전이 비었거나 START_TRIES 번 안에 못 찾으면 null (그때는 플레이어가 아무 단어로 시작한다)
    */
@@ -224,42 +305,102 @@ export function createGameService({ redis, db, turnMs = 10_000, random = Math.ra
     return null;
   }
 
-  /** 새 시작 단어를 놓고 플레이어 차례를 연다 (판을 열 때, 그리고 누군가 목숨을 잃은 뒤) */
-  async function openRound(state, used, trace) {
-    const first = randomStart ? await pickStartWord(trace, used) : null;
-    state.need = null;
-    if (first) {
-      state.history.push(entry('start', first.word, first.total));
-      state.need = nextStartChars(first.word);
-      await redis.set(usedPrefix(state.id) + first.word, 1, { ttl: GAME_TTL });      // 시작 단어도 이번 판에 나온 단어다
-    }
-    await redis.set(gameKey(state.id), state, { ttl: GAME_TTL });
-    await redis.set(turnKey(state.id), 1, { ttl: turnMs });        // 플레이어 차례 시작: 이 키가 사라지면 시간 초과
+  /**
+   * 상대가 한 수 둔다: 후보마다 등급을 매겨 센 등급부터 확률을 굴린다 (rules.js pickWord). 등급 표를 못 만들면 등급 없이 고른다.
+   * 라운드의 첫 수면 한방 단어(끝내기 단어, 이을 단어 0개)를 빼고 고른다 (첫 턴 한방 금지).
+   * 낼 단어가 없으면 null, 냈으면 { reply, theirs } (theirs: 그 단어 다음에 플레이어가 낼 수 있는 단어)
+   */
+  async function computerMove(state, usedWords, candidates, trace) {
+    const ready = gradeCounts !== null, started = performance.now();
+    const counts = await gradeTable().catch(() => null);
+    if (!ready) trace.push({ label: counts ? '등급 표 만들기 (사전 전체를 한 번 셈, 글자 ' + counts.size + '개)' : '등급 표 만들기 실패 → 등급 없이 고름', key: 'words', source: 'db', plan: 'INDEX_RANGE', ms: performance.now() - started });
+    const grader = counts ? graderOf(counts) : undefined;
+    const pool = state.firstMove ? candidates.filter((c) => !c.finisher && (!grader || grader(c.word) !== 'kill')) : candidates;
+    const reply = pickWord(pool, state.level, random, grader);
+    return reply ? { reply, theirs: await recordComputer(state, usedWords, reply, trace) } : null;
+  }
+
+  /** 상대가 낸 단어를 판에 적는다 → 그 단어 다음에 플레이어가 낼 수 있는 단어 */
+  async function recordComputer(state, usedWords, reply, trace) {
+    await redis.set(usedPrefix(state.id) + reply.word, 1, { ttl: GAME_TTL });
+    usedWords.add(reply.word);
+    const theirs = await continuations(reply.word, usedWords, trace);
+    const answered = entry('computer', reply.word, theirs.total, { finisher: reply.finisher });
+    state.history.push(answered);
+    state.score.computer += answered.points;
+    state.turns++;
+    state.need = nextStartChars(reply.word);
+    state.firstMove = false;
+    return theirs;
   }
 
   /**
-   * who('player' | 'computer')가 목숨 하나를 잃는다.
-   * 목숨이 남아 있으면 새 시작 단어로 이어 가고, 0 이 되면 판이 끝난다.
-   *   reason: 'timeout' 시간 초과 · 'no-word' 이을 단어가 없음 · 'computer-stuck' 상대가 이을 단어가 없음
+   * 새 라운드를 연다 (판을 열 때, 그리고 누군가 목숨을 잃은 뒤).
+   *   starter : 먼저 내는 쪽. 판의 첫 라운드는 무작위, 그 뒤로는 목숨을 잃은 쪽
+   * 시작 단어를 놓고(randomStart), 상대가 먼저면 상대가 바로 첫 수를 둔 뒤 플레이어 차례를 연다.
+   * 시작 단어가 없을 때 상대의 첫 수는 시작 단어를 뽑는 방법(pickStartWord: 2~3글자, 이을 단어가 있음)으로 고른다.
+   * 상대가 첫 수를 못 두면 상대가, 상대의 첫 수에 이을 단어가 없으면 플레이어가 목숨을 잃는다
+   */
+  async function openRound(state, used, trace, starter = 'player') {
+    const first = randomStart ? await pickStartWord(trace, used) : null;
+    const usedWords = new Set(used);
+    state.need = null;
+    state.roundLeftMs = state.roundMs;                                     // 새 라운드: 라운드 시간을 다시 채운다
+    state.firstMove = true;                                                // 이번 라운드의 첫 수: 한방 단어 금지
+    state.starter = starter;
+    if (first) {
+      state.history.push(entry('start', first.word, first.total));
+      state.need = nextStartChars(first.word);
+      usedWords.add(first.word);
+      await redis.set(usedPrefix(state.id) + first.word, 1, { ttl: GAME_TTL });      // 시작 단어도 이번 라운드에 나온 단어다
+    }
+    if (starter === 'computer') {
+      let theirs = null;
+      if (first) {
+        const move = await computerMove(state, usedWords, (await continuations(first.word, usedWords, trace)).open, trace);
+        theirs = move && move.theirs;
+      } else {
+        const opening = await pickStartWord(trace, usedWords);
+        if (opening) theirs = await recordComputer(state, usedWords, { word: opening.word, finisher: (await lookup(opening.word, trace)).finisher }, trace);
+      }
+      if (!theirs) return loseLife(state, 'computer', 'computer-stuck', trace);
+      if (theirs.open.length === 0) return loseLife(state, 'player', 'no-word', trace);
+    }
+    turnLimit(state);
+    await redis.set(gameKey(state.id), state, { ttl: GAME_TTL });
+    await openTurn(state);                                         // 플레이어 차례 시작: 이 키가 사라지면 시간 초과
+  }
+
+  /**
+   * who('player' | 'computer')가 목숨 하나를 잃는다. 이것으로 이번 라운드가 끝난다.
+   * 목숨이 0 이 되면 판이 끝난다.
+   * 아니면 나온 단어를 비우고(끄투처럼 라운드마다) 새 라운드를 연다. 목숨을 잃은 쪽이 먼저 낸다
+   *   reason: 'timeout' 시간 초과 · 'round-time' 라운드 시간 끝 · 'no-word' 이을 단어가 없음 · 'computer-stuck' 상대가 이을 단어가 없음
    */
   async function loseLife(state, who, reason, trace) {
     state.lives[who]--;
     state.history.push({ by: 'life', who, reason, left: state.lives[who] });
     if (state.lives[who] <= 0) return finish(state, who === 'player' ? 'lose' : 'win', reason, trace);
-    await openRound(state, await usedWordsOf(state.id), trace);
+    state.roundNo = (state.roundNo ?? 1) + 1;
+    const cleared = await redis.delByPrefix(usedPrefix(state.id));
+    trace.push({ label: '새 라운드 ' + state.roundNo + ': 지난 라운드의 단어 표시 ' + cleared + '개 지움', key: usedPrefix(state.id) + '*', source: 'redis', plan: null, ms: 0 });
+    await openRound(state, new Set(), trace, who);                         // 목숨을 잃은 쪽이 다음 라운드를 먼저 낸다
     return state;
   }
 
-  async function start({ player, level } = {}) {
+  async function start({ player, level, round, lives: pickedLives } = {}) {
     const name = String(player ?? '').trim().slice(0, 12) || '손님';
     if (!LEVELS.includes(level)) level = 'normal';
+    round = Number(round);
+    if (!ROUND_TIMES.includes(round)) round = DEFAULT_ROUND;
+    const lifeCount = Number.isInteger(Number(pickedLives)) && pickedLives >= 1 && pickedLives <= MAX_LIVES ? Number(pickedLives) : lives;   // 1~5 가 아니면 기본값
     const trace = [];
     const id = await redis.incr('game:seq');
     const state = {
-      id, player: name, level, status: 'playing', result: null, reason: null, need: null, turns: 0,
-      lives: { player: lives, computer: lives }, score: { player: 0, computer: 0 }, history: [],
+      id, player: name, level, round, roundNo: 1, roundMs: round * secondMs, roundLeftMs: round * secondMs, turnLimitMs: turnMs, status: 'playing', result: null, reason: null, need: null, turns: 0,
+      lives: { player: lifeCount, computer: lifeCount }, livesStart: lifeCount, score: { player: 0, computer: 0 }, history: [],
     };
-    await openRound(state, new Set(), trace);
+    await openRound(state, new Set(), trace, coin() < 0.5 ? 'player' : 'computer');   // 첫 라운드의 선공은 무작위
     return { game: await view(state), trace };
   }
 
@@ -273,45 +414,46 @@ export function createGameService({ redis, db, turnMs = 10_000, random = Math.ra
       const done = async (extra) => ({ accepted: false, reject: null, computer: null, ...extra, game: await view(state), trace });
 
       // 차례 키가 만료돼 사라졌으면 시간 초과다: 목숨을 잃고, 지금 낸 단어는 받지 않는다
-      if ((await redis.ttl(turnKey(id))) === -2) {
-        await loseLife(state, 'player', 'timeout', trace);
+      const remaining = await redis.ttl(turnKey(id));
+      if (remaining === -2) {
+        await loseLife(state, 'player', timeoutReason(state), trace);
         return done({ reject: state.status === 'playing' ? { code: 'timeout', message: '시간이 지나 목숨을 하나 잃었습니다' } : null });
       }
 
       const valid = WORD_PATTERN.test(word);
       const used = valid && (await redis.get(usedPrefix(id) + word)) !== null;
       const startsRight = !state.need || state.need.includes(word[0]);
-      const known = valid && startsRight && !used ? (await lookup(word, trace)).known : true;   // 사전은 다른 조건을 통과한 단어만 찾아본다
-      const reject = rejectReason(word, { need: state.need, used, known });
+      const found = valid && startsRight && !used ? await lookup(word, trace) : null;   // 사전은 다른 조건을 통과한 단어만 찾아본다
+      const reject = rejectReason(word, { need: state.need, used, known: found ? found.known : true });
       if (reject) return done({ reject });
 
-      // 받아들인 단어를 이번 판에 나온 단어로 표시하고, 등급에 따라 점수를 준다
-      await redis.set(usedPrefix(id) + word, 1, { ttl: GAME_TTL });
+      // 이을 단어를 센다. 라운드의 첫 단어로 한방 단어(이을 단어 0개, 또는 끝내기 단어)를 내면 받지 않는다 (첫 턴 한방 금지)
       const usedWords = await usedWordsOf(id);
+      usedWords.add(word);
       const mine = await continuations(word, usedWords, trace);
+      const firstKill = rejectReason(word, { firstKill: state.firstMove === true && (mine.total === 0 || found.finisher) });
+      if (firstKill) return done({ reject: firstKill });
+
+      // 받아들인 단어를 이번 라운드에 나온 단어로 표시하고, 등급에 따라 점수를 준다. 이번 차례에 쓴 시간은 라운드 시간에서 뺀다
+      spend(state, remaining);
+      await redis.set(usedPrefix(id) + word, 1, { ttl: GAME_TTL });
       const played = entry('player', word, mine.total);
       state.history.push(played);
       state.score.player += played.points;
       state.turns++;
+      state.firstMove = false;
 
-      // 상대가 이을 단어가 없으면 상대가 목숨을 잃는다
-      const reply = pickWord(mine.open, state.level, random);
-      if (!reply) { await loseLife(state, 'computer', 'computer-stuck', trace); return done({ accepted: true }); }
-
-      await redis.set(usedPrefix(id) + reply.word, 1, { ttl: GAME_TTL });
-      usedWords.add(reply.word);
-      const theirs = await continuations(reply.word, usedWords, trace);
-      const answered = entry('computer', reply.word, theirs.total, { finisher: reply.finisher });
-      state.history.push(answered);
-      state.score.computer += answered.points;
-      state.turns++;
-      state.need = nextStartChars(reply.word);
+      // 상대가 받아친다. 이을 단어가 없으면 상대가 목숨을 잃는다
+      const move = await computerMove(state, usedWords, mine.open, trace);
+      if (!move) { await loseLife(state, 'computer', 'computer-stuck', trace); return done({ accepted: true }); }
+      const reply = move.reply;
 
       // 플레이어가 이을 수 있는 단어가 하나도 없으면 플레이어가 목숨을 잃는다
-      if (theirs.open.length === 0) { await loseLife(state, 'player', 'no-word', trace); return done({ accepted: true, computer: reply }); }
+      if (move.theirs.open.length === 0) { await loseLife(state, 'player', 'no-word', trace); return done({ accepted: true, computer: reply }); }
 
+      turnLimit(state);
       await redis.set(gameKey(id), state, { ttl: GAME_TTL });
-      await redis.set(turnKey(id), 1, { ttl: turnMs });        // 플레이어 차례 시작: 이 키가 사라지면 시간 초과
+      await openTurn(state);                                   // 플레이어 차례 시작: 이 키가 사라지면 시간 초과
       return done({ accepted: true, computer: reply });
     });
   }
@@ -323,7 +465,7 @@ export function createGameService({ redis, db, turnMs = 10_000, random = Math.ra
     return withLock(id, async () => {
       const trace = [];
       const fresh = await load(id);
-      if (fresh.status === 'playing' && (await redis.ttl(turnKey(id))) === -2) await loseLife(fresh, 'player', 'timeout', trace);
+      if (fresh.status === 'playing' && (await redis.ttl(turnKey(id))) === -2) await loseLife(fresh, 'player', timeoutReason(fresh), trace);
       return { game: await view(fresh), trace };
     });
   }
@@ -374,10 +516,18 @@ export function createGameService({ redis, db, turnMs = 10_000, random = Math.ra
     return { redis: info, tables, pool, cache: { ...wordCache.stats } };
   }
 
-  /** 단어 캐시를 모두 지운다 (단어 파일을 다시 읽어 들인 뒤에 부른다) */
+  /** 단어 캐시를 모두 지운다 (단어 파일을 다시 읽어 들인 뒤에 부른다). 등급 표도 버려서 다음에 다시 센다 */
   async function clearWordCache() {
+    gradeCounts = null;
+    gradeCounting = null;
     return (await redis.delByPrefix('word:')) + (await redis.delByPrefix('first:'));
   }
 
-  return { register, remove, start, play, get, giveUp, ranking, record, words, status, clearWordCache };
+  /** 등급 표를 미리 센다 (서버를 켤 때 부른다. 첫 차례가 잠금 시간 안에 끝나도록) → 표 (Map) */
+  const prepareGrades = () => gradeTable();
+
+  // 같이 하는 방(rooms.js)이 같은 사전 · 캐시를 쓰도록 내준다
+  const dictionary = { lookup, continuations, pickStartWord };
+
+  return { register, remove, start, play, get, giveUp, ranking, record, words, status, clearWordCache, prepareGrades, dictionary };
 }

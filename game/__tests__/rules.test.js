@@ -1,7 +1,7 @@
 /* rules.js 단위 테스트: 두음법칙, 단어 판정, 상대의 단어 선택 */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { WORD_PATTERN, LEVELS, FINISHER_CHANCE, dueum, nextStartChars, rejectReason, pickWord, gradeOf, letterPoints } from '../rules.js';
+import { WORD_PATTERN, LEVELS, ROUND_TIMES, DEFAULT_ROUND, FINISHER_CHANCE, dueum, nextStartChars, rejectReason, pickWord, gradeOf, letterPoints } from '../rules.js';
 
 test('단어 형식: 한글 음절 2글자 이상만', () => {
   for (const ok of ['기차', '끝말잇기', '뷁뷁']) assert.equal(WORD_PATTERN.test(ok), true, ok);
@@ -58,9 +58,16 @@ test('단어 판정: 거절 이유는 형식 → 시작 글자 → 이미 나옴
   assert.equal(rejectReason('차표', { need: ['차'], used: true, known: false }).code, 'used');
   assert.equal(rejectReason('차표', { need: ['차'], known: false }).code, 'unknown');
   assert.match(rejectReason('기차', { need: ['리', '이'] }).message, /'리' 또는 '이'/);
+  assert.equal(rejectReason('범인', { firstKill: true }).code, 'first-kill');            // 라운드의 첫 단어로 한방 단어
+  assert.equal(rejectReason('범인', { firstKill: false }), null);
 });
 
 const CANDIDATES = [{ word: '차표', finisher: false }, { word: '차도', finisher: false }, { word: '차륜', finisher: true }];
+
+test('라운드 시간 선택지는 끄투와 같고, 기본은 60초다', () => {
+  assert.deepEqual(ROUND_TIMES, [10, 30, 60, 90, 120, 150]);
+  assert.equal(DEFAULT_ROUND, 60);
+});
 
 test('상대의 선택: 후보가 없으면 null', () => {
   for (const level of LEVELS) assert.equal(pickWord([], level), null);
@@ -110,6 +117,65 @@ test('상대의 선택: 난수에 따라 후보가 골고루 나온다', () => {
   assert.equal(pickWord(normals, 'easy', () => 0).word, '차표');
   assert.equal(pickWord(normals, 'easy', () => 0.5).word, '차도');
   assert.equal(pickWord(normals, 'easy', () => 0.999).word, '차도');
+});
+
+// 등급마다 후보를 하나씩 (넉넉은 두 개) 둔다. 단어 이름이 곧 등급이다 (pickWord 는 단어 뜻을 보지 않는다)
+const GRADED = [{ word: '한방', finisher: true }, { word: '공격', finisher: false }, { word: '까다', finisher: false },
+  { word: '보통', finisher: false }, { word: '넉넉일', finisher: false }, { word: '넉넉이', finisher: false }];
+const GRADE_OF = { 공격: 'attack', 까다: 'tricky', 보통: 'normal', 넉넉일: 'easy', 넉넉이: 'easy' };
+const gradeOfWord = (word) => GRADE_OF[word];
+const only = (...words) => GRADED.filter((c) => words.includes(c.word));
+/** 정해 둔 난수를 차례로 돌려주고, 몇 번 불렸는지 센다 */
+function sequence(...values) {
+  const next = () => values[next.calls++];
+  next.calls = 0;
+  return next;
+}
+
+test('상대의 선택: 센 등급부터 차례로 확률을 굴려, 처음 걸린 등급에서 낸다', () => {
+  assert.equal(pickWord(GRADED, 'normal', sequence(0.4, 0), gradeOfWord).word, '한방');                 // 한방 굴림 성공
+  assert.equal(pickWord(GRADED, 'normal', sequence(0.9, 0.4, 0), gradeOfWord).word, '공격');            // 한방 실패 → 공격 성공
+  assert.equal(pickWord(GRADED, 'normal', sequence(0.9, 0.9, 0.9, 0.4, 0), gradeOfWord).word, '보통');  // 한방 · 공격 · 까다로움 실패 → 보통 성공
+});
+
+test('상대의 선택: 넉넉 앞까지 모두 실패하면 넉넉에서 낸다 (마지막 등급은 굴리지 않는다)', () => {
+  const random = sequence(0.9, 0.9, 0.9, 0.9, 0.5);
+  assert.equal(pickWord(GRADED, 'normal', random, gradeOfWord).word, '넉넉이');      // 넉넉 두 개 중 0.5 → 두 번째
+  assert.equal(random.calls, 5);                                                      // 굴림 4번 + 넉넉 안에서 고르기 1번
+});
+
+test('상대의 선택: 후보가 없는 등급은 굴리지 않고 건너뛰고, 넉넉이 없으면 남은 가장 약한 등급에서 낸다', () => {
+  assert.equal(pickWord(only('한방', '보통', '넉넉일'), 'normal', sequence(0.9, 0.4, 0), gradeOfWord).word, '보통');   // 공격 · 까다로움은 건너뜀
+  const random = sequence(0.9, 0);
+  assert.equal(pickWord(only('공격', '보통'), 'normal', random, gradeOfWord).word, '보통');                            // 공격 실패 → 남은 가장 약한 등급
+  assert.equal(random.calls, 2);
+});
+
+test('상대의 선택: hard 는 있는 것 중 가장 센 등급, easy 는 끝내기 단어 없이 가장 약한 등급에서 낸다', () => {
+  for (const r of [0, 0.5, 0.99]) {
+    assert.equal(pickWord(GRADED, 'hard', () => r, gradeOfWord).word, '한방');
+    assert.equal(pickWord(only('공격', '까다', '넉넉일'), 'hard', () => r, gradeOfWord).word, '공격');
+    assert.equal(GRADE_OF[pickWord(GRADED, 'easy', () => r, gradeOfWord).word], 'easy');
+    assert.equal(pickWord(only('한방', '공격', '보통'), 'easy', () => r, gradeOfWord).word, '보통');
+  }
+  assert.equal(pickWord(only('한방'), 'easy', () => 0, gradeOfWord), null);           // 끝내기 단어밖에 없으면 진다
+});
+
+test('상대의 선택: 다섯 등급이 다 있을 때 등급별 비율 (2만 번씩 뽑아 확인)', () => {
+  const expected = {                                   // p, (1-p)p, (1-p)²p, (1-p)³p, (1-p)⁴
+    mild: [0.25, 0.1875, 0.140625, 0.10546875, 0.31640625],
+    normal: [0.5, 0.25, 0.125, 0.0625, 0.0625],
+    tough: [0.75, 0.1875, 0.046875, 0.01171875, 0.00390625],
+  };
+  const order = ['kill', 'attack', 'tricky', 'normal', 'easy'];
+  for (const [level, rates] of Object.entries(expected)) {
+    const counts = Object.fromEntries(order.map((g) => [g, 0]));
+    for (let i = 0; i < 20000; i++) {
+      const c = pickWord(GRADED, level, Math.random, gradeOfWord);
+      counts[c.finisher ? 'kill' : GRADE_OF[c.word]]++;
+    }
+    order.forEach((g, i) => assert.ok(Math.abs(counts[g] / 20000 - rates[i]) < 0.02, level + ' ' + g + ' ' + counts[g] / 20000));
+  }
 });
 
 test('등급: 이을 수 있는 단어 수로 다섯 등급을 나눈다', () => {

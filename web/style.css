@@ -50,6 +50,18 @@ h3 { margin: 22px 0 8px; font: 600 15px var(--ui); color: var(--muted); }
 .result.win { color: var(--teal); }
 .result.lose { color: var(--grid); }
 
+/* 같이 하기 */
+.page.room-page { grid-template-columns: minmax(0, 1fr); max-width: 760px; }
+.members { list-style: none; margin: 12px 0; padding: 0; }
+.member { display: flex; align-items: baseline; gap: 12px; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+.member .name { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.member.turn { background: var(--marker); }
+.member.out { opacity: 0.45; }
+.member .points { font-variant-numeric: tabular-nums; }
+.rooms td:last-child { text-align: right; }
+.warn { margin-top: 14px; padding: 12px 14px; border: 1px solid var(--grid); color: var(--grid); }
+.warn p { margin: 0 0 10px; }
+
 /* 목숨과 점수 */
 .scores { display: flex; justify-content: space-between; gap: 16px; margin-bottom: 10px; }
 .side { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
@@ -99,10 +111,16 @@ h3 { margin: 22px 0 8px; font: 600 15px var(--ui); color: var(--muted); }
 /* 차례 시계 */
 .clock { display: flex; align-items: center; gap: 12px; margin-top: 20px; }
 .bar { flex: 1; height: 8px; background: var(--line); }
-.fill { height: 100%; background: var(--ink); transition: width 0.2s linear; }
+.fill { height: 100%; background: var(--ink); transition: width 0.1s linear; }
 .left { min-width: 4.5ch; text-align: right; font: 600 18px var(--ui); font-variant-numeric: tabular-nums; }
 .clock.hurry .fill { background: var(--grid); }
 .clock.hurry .left { color: var(--grid); }
+.clock.round { margin-top: 8px; }
+.clock.round .bar { height: 4px; }
+.clock.round .left { font-size: 14px; font-weight: 500; }
+.clock .name { font: 500 13px var(--ui); min-width: 5ch; }
+.rounds { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 10px; }
+.rounds .name { font: 500 13px var(--ui); margin-right: 4px; }
 
 /* 입력 줄 */
 .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; }

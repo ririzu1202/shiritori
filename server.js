@@ -20,6 +20,7 @@ import { createClient } from './redis/src/client.js';
 import { createDbServer, listen as listenDb } from './dbms/src/api.js';
 import { createDb } from './game/db.js';
 import { createGameService } from './game/service.js';
+import { createRoomService } from './game/rooms.js';
 import { createGameServer } from './game/server.js';
 import { createAuth } from './game/auth.js';
 import { ADMIN_FILE } from './game/set-admin.js';
@@ -50,15 +51,20 @@ const redisUrl = await listen(redisServer, redisPort);
 const redis = createClient(redisUrl), db = createDb(dbUrl);
 const service = createGameService({ redis, db, wordFiles: paths.wordFiles });
 const cleared = await service.clearWordCache();           // 단어 파일이 바뀌었을 수 있으니 단어 캐시는 새로 시작한다
+const grading = service.prepareGrades();                  // 상대가 단어 등급을 알도록 사전을 한 번 세어 둔다 (첫 차례가 잠금 5초 안에 끝나게 미리)
 const auth = createAuth({ redis, adminFile: ADMIN_FILE });   // 단어 등록은 제작자 로그인이 필요하다
-const gameServer = createGameServer({ service, auth, webDir: path.join(ROOT, 'web'), libDir: path.join(ROOT, 'mini-react') });
-const gameUrl = await listen(gameServer, port);
+const rooms = createRoomService({ redis, db, dictionary: service.dictionary });   // 같이 하는 방 (npm run room 으로 켜면 같은 와이파이에서 들어올 수 있다)
+const gameServer = createGameServer({ service, auth, rooms, webDir: path.join(ROOT, 'web'), libDir: path.join(ROOT, 'mini-react') });
+const gameUrl = await listen(gameServer, port, process.env.HOST || '127.0.0.1');   // HOST=0.0.0.0 이면 같은 와이파이의 다른 기기도 접속한다 (npm run room)
 
 const wordCount = (await db.tables()).find((t) => t.table === 'words').rows;
 console.log('끝말잇기      : ' + gameUrl + '   ← 브라우저로 여세요');
 console.log('미니 레디스   : ' + redisUrl + '   (복구한 키 ' + persistent.recovered + '개, 단어 캐시 ' + cleared + '개 지움)');
 console.log('미니 DBMS     : ' + dbUrl + '   (등록된 단어 기록 ' + wordCount + '건)');
 console.log(describeImport(imported));
+grading.then(
+  (counts) => console.log('상대 등급 표  : 첫 글자 ' + counts.size + '종류 (사전을 한 번 세어 둠)'),
+  (err) => console.log('상대 등급 표를 만들지 못했습니다 (' + err.message + '). 첫 차례에 다시 셉니다.'));
 if (!auth.configured()) console.log('\n제작자 계정이 없어 화면에서 단어를 등록할 수 없습니다. npm run admin 으로 계정을 만드세요.');
 if (wordCount === 0) console.log('\n사전이 비어 있습니다. words/words.txt 와 words/finishers.txt 에 단어를 채우고 다시 켜거나, 화면의 "단어 등록"에서 넣으세요.');
 

@@ -8,6 +8,7 @@ import { startGameStack } from './helper.js';
 import { createGameServer } from '../server.js';
 import { listen, close } from '../../redis/src/api.js';
 import { createAuth, makeAccount } from '../auth.js';
+import { createRoomService } from '../rooms.js';
 
 const ID = 'maker', PASSWORD = 'test-password-1';
 
@@ -19,6 +20,7 @@ before(async () => {
   server = createGameServer({
     service: stack.service,
     auth: createAuth({ redis: stack.redis, adminFile }),
+    rooms: createRoomService({ redis: stack.redis, db: stack.db, dictionary: stack.service.dictionary, random: () => 0, randomStart: false }),
     webDir: fileURLToPath(new URL('../../web', import.meta.url)),
     libDir: fileURLToPath(new URL('../../mini-react', import.meta.url)),
   });
@@ -26,10 +28,10 @@ before(async () => {
 });
 after(async () => { await close(server); await stack.stop(); });
 
-async function call(method, pathname, body, token) {
+async function call(method, pathname, body, token, roomToken) {
   const res = await fetch(url + pathname, {
     method,
-    headers: { ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...(token ? { authorization: 'Bearer ' + token } : {}) },
+    headers: { ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...(token ? { authorization: 'Bearer ' + token } : {}), ...(roomToken ? { 'x-room-token': roomToken } : {}) },
     body: typeof body === 'string' ? body : JSON.stringify(body),
   });
   return [res.status, await res.json()];
@@ -175,4 +177,23 @@ test('로그인을 5번 틀리면 429 로 막는다', async () => {
   const [status, data] = await call('POST', '/api/login', { id: ID, password: PASSWORD });
   assert.equal(status, 429);
   assert.match(data.error, /1분/);
+});
+
+test('같이 하는 방: HTTP 로 만들고 · 들어가고 · 시작하고 · 차례대로 낸다 (토큰은 X-Room-Token 머리말)', async () => {
+  const [made, a] = await call('POST', '/api/rooms', { name: 'HTTP방', player: '가', lives: 2 });
+  assert.equal(made, 200);
+  const [joined, b] = await call('POST', '/api/rooms/' + a.room.id + '/join', { player: '나' });
+  assert.equal(joined, 200);
+  const [, listed] = await call('GET', '/api/rooms');
+  assert.ok(listed.rooms.some((r) => r.id === a.room.id && r.players.length === 2));
+  assert.equal((await call('POST', '/api/rooms/' + a.room.id + '/start', undefined, null, b.token))[0], 403);   // 방장이 아니다
+  const [started, s] = await call('POST', '/api/rooms/' + a.room.id + '/start', undefined, null, a.token);
+  assert.deepEqual([started, s.room.status, s.room.turn], [200, 'playing', 1]);
+  const [, turn] = await call('POST', '/api/rooms/' + a.room.id + '/words', { word: '기차' }, null, a.token);
+  assert.deepEqual([turn.accepted, turn.room.turn], [true, 2]);
+  const [, seen] = await call('GET', '/api/rooms/' + a.room.id, undefined, null, b.token);
+  assert.deepEqual([seen.room.me, seen.room.need], [2, ['차']]);
+  assert.equal((await call('POST', '/api/rooms/' + a.room.id + '/words', { word: '차표' }, null, 'wrong'))[0], 403);
+  assert.equal((await call('GET', '/api/rooms/99999'))[0], 404);
+  assert.equal((await call('DELETE', '/api/rooms'))[0], 405);
 });

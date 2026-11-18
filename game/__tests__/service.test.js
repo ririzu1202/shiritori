@@ -56,6 +56,7 @@ test('등록 → 무효화: "없는 단어"로 캐시된 결과가 등록 직후
   const registered = await service.register('하늘');
   assert.deepEqual(registered.invalidated, ['word:하늘', 'first:하']);
   assert.equal(await redis.get('word:하늘'), null);
+  await service.register('늘보');                                      // '하늘'이 첫 단어로 쓰일 수 있게 이을 단어를 하나 둔다 (첫 턴 한방 금지)
 
   const second = await service.play(game.id, '하늘');
   assert.equal(second.accepted, true);
@@ -111,7 +112,7 @@ test('판: 거절된 단어는 판을 바꾸지 않고 이유를 알려 준다',
   await service.giveUp(game.id);
 });
 
-test('판: 이번 판에 이미 나온 단어는 다시 낼 수 없다 (상대가 낸 단어도 포함)', async () => {
+test('판: 이번 라운드에 이미 나온 단어는 다시 낼 수 없다 (상대가 낸 단어도 포함)', async () => {
   const other = await startGameStack({ words: [['기차'], ['차기'], ['기사'], ['사기']] });
   try {
     const { game } = await other.service.start({ player: '중복', level: 'easy' });
@@ -140,7 +141,9 @@ test('판: 두음법칙으로 바뀐 글자로도 이을 수 있다', async () =
 
 test('판: 상대가 이을 단어가 없으면 플레이어가 이긴다', async () => {
   const { game } = await service.start({ player: '승리', level: 'easy' });
-  const turn = await service.play(game.id, '범인');
+  await service.play(game.id, '요리');                                // 상대: 이발
+  await service.play(game.id, '발표');                                // 상대: 표범
+  const turn = await service.play(game.id, '범인');                   // 첫 단어가 아니라 한방 단어를 낼 수 있다
   assert.equal(turn.accepted, true);
   assert.equal(turn.computer, null);
   assert.deepEqual([turn.game.status, turn.game.result, turn.game.reason], ['over', 'win', 'computer-stuck']);
@@ -152,6 +155,70 @@ test('판: 어려움 난이도는 끝내기 단어를 낸다', async () => {
   const turn = await service.play(game.id, '기차');
   assert.deepEqual(turn.computer, { word: '차륜', finisher: true });
   assert.deepEqual([turn.game.result, turn.game.reason], ['lose', 'no-word']);
+});
+
+test('판: 상대는 등급 표로 후보의 등급을 매기고, 등록 · 삭제하면 표의 숫자가 바뀐다', async () => {
+  // 차표 → '표'로 시작하는 단어 1개(표범) → 공격.  차도 → '도'로 시작하는 단어 0개 → 한방 (끝내기 표시는 없다)
+  const other = await startGameStack({ words: [['기차'], ['차표'], ['표범'], ['차도']] });
+  const reply = async (level) => {
+    const { game } = await other.service.start({ player: level, level });
+    const turn = await other.service.play(game.id, '기차');
+    await other.service.giveUp(game.id).catch(() => {});
+    return turn;
+  };
+  try {
+    const first = await reply('hard');
+    assert.equal(first.computer.word, '차도');                                             // 가장 센 등급 (등급 없이 고르면 첫 후보 '차표')
+    assert.equal(first.game.history.find((h) => h.by === 'computer').grade, 'kill');     // 기록에 남는 등급도 같은 셈이다
+    assert.ok(first.trace.some((t) => t.label.startsWith('등급 표 만들기')));             // 처음 한 번 사전을 센다
+    assert.equal((await reply('easy')).computer.word, '차표');                            // 가장 약한 등급
+
+    await other.service.register('도시');                                                  // '도' 1개 → 차도도 공격이 된다
+    const second = await reply('hard');
+    assert.equal(second.computer.word, '차표');                                            // 둘 다 공격 → 무작위(0) → 첫 후보
+    assert.ok(!second.trace.some((t) => t.label.startsWith('등급 표 만들기')));            // 다시 세지 않고 숫자만 고쳤다
+
+    await other.service.remove('도시');                                                    // 다시 0개 → 차도는 한방
+    assert.equal((await reply('hard')).computer.word, '차도');
+  } finally { await other.stop(); }
+});
+
+test('라운드 시간: 고르지 않으면 60초, 끄투 선택지(10 · 30 · 60 · 90 · 120 · 150초)만 받는다', async () => {
+  const a = await service.start({ player: '기본' });
+  const b = await service.start({ player: '삼십', round: 30 });
+  const c = await service.start({ player: '이상', round: 45 });
+  assert.deepEqual([a.game.round, b.game.round, c.game.round], [60, 30, 60]);
+  assert.ok(b.game.roundRemainingMs > 29_000 && b.game.roundRemainingMs <= 30_000);
+  for (const g of [a, b, c]) await service.giveUp(g.game.id);
+});
+
+test('라운드 시간: 차례 제한보다 라운드가 먼저 끝나면 그때 차례인 플레이어가 목숨을 잃는다 (round-time)', async () => {
+  const quick = await startGameStack({ words: WORDS, turnMs: 10_000, secondMs: 20 });   // 라운드 10초 → 200ms
+  try {
+    const { game } = await quick.service.start({ player: '라운드', level: 'easy', round: 10 });
+    assert.equal(game.remainingMs <= 200, true);                                          // 차례 제한 10초보다 라운드가 짧다
+    await sleep(300);
+    const after = await quick.service.get(game.id);
+    assert.deepEqual([after.game.status, after.game.reason], ['over', 'round-time']);
+  } finally { await quick.stop(); }
+});
+
+test('라운드 시간: 단어를 낼 때마다 그 차례에 쓴 시간만큼 줄고, 목숨을 잃으면 새 라운드에서 다시 채운다', async () => {
+  const quick = await startGameStack({ words: WORDS, turnMs: 10_000, secondMs: 100, lives: 2 });   // 라운드 10초 → 1,000ms
+  try {
+    const { game } = await quick.service.start({ player: '소모', level: 'easy', round: 10 });
+    await sleep(150);
+    const turn = await quick.service.play(game.id, '기차');                                // 상대: 차표
+    assert.ok(turn.game.roundRemainingMs <= 870 && turn.game.roundRemainingMs > 600, String(turn.game.roundRemainingMs));
+    assert.ok(turn.game.turnRemainingMs > 9_900, String(turn.game.turnRemainingMs));        // 차례 막대는 라운드가 짧아도 10초로 다시 찬다
+    assert.ok(turn.game.remainingMs <= turn.game.roundRemainingMs + 5);                     // 실제 시간 초과는 라운드가 먼저 끝나는 때
+    await sleep(Math.ceil(turn.game.roundRemainingMs) + 100);
+    const lost = await quick.service.get(game.id);
+    assert.equal(lost.game.history.find((h) => h.by === 'life').reason, 'round-time');
+    assert.equal(lost.game.status, 'playing');                                             // 목숨 하나가 남았다
+    assert.ok(lost.game.roundRemainingMs > 900);                                           // 새 라운드: 다시 채워짐
+    await quick.service.giveUp(game.id);
+  } finally { await quick.stop(); }
 });
 
 test('판: 끝난 판에는 단어를 낼 수 없고, 없는 판은 404', async () => {
@@ -261,9 +328,10 @@ test('순위: 점수가 높은 판이 위로 온다', async () => {
     const low = await other.service.start({ player: '낮은점수', level: 'easy' });
     await other.service.giveUp(low.game.id);                             // 0점
     const high = await other.service.start({ player: '높은점수', level: 'easy' });
-    await other.service.play(high.game.id, '범인');                       // 한방 2,000점
+    await other.service.play(high.game.id, '기차');                       // 공격 1,012점, 상대: 차표
+    await other.service.play(high.game.id, '표범');                       // 공격 1,012점, 상대: 범인 → 이을 단어 없음
     const { ranking } = await other.service.ranking();
-    assert.deepEqual(ranking.map((r) => [r.player, r.score]), [['높은점수', 2012], ['낮은점수', 0]]);
+    assert.deepEqual(ranking.map((r) => [r.player, r.score]), [['높은점수', 2024], ['낮은점수', 0]]);
   } finally { await other.stop(); }
 });
 
@@ -406,7 +474,7 @@ test('등급: 낸 단어마다 이을 수 있는 단어 수와 등급이 기록�
   } finally { await other.stop(); }
 });
 
-test('등급: 이번 판에 써서 줄어든 것은 반영하지 않는다 (사전 전체 개수로 센다)', async () => {
+test('등급: 이번 라운드에 써서 줄어든 것은 반영하지 않는다 (사전 전체 개수로 센다)', async () => {
   // 기차 → 차기 → 기사 → 사기 → 기차(이미 나옴). '기'로 시작하는 단어는 기차·기사 2개
   const other = await startGameStack({ words: [['기차'], ['차기'], ['기사'], ['사기']] });
   try {
@@ -448,9 +516,9 @@ test('점수: 등급에 따라 100 ~ 2,000점을 받고, 양쪽 점수가 따로
     assert.deepEqual(first.game.history.map((h) => [h.word, h.grade, h.points]), [['기차', 'tricky', 512], ['차표', 'attack', 1012]]);     // 등급 점수 + 2글자 12
     assert.deepEqual(first.game.score, { player: 512, computer: 1012 });
 
-    const second = await other.service.play(game.id, '표범');             // 한방
-    assert.deepEqual(second.game.score, { player: 2524, computer: 1012 });
-    assert.equal((await other.service.play(game.id, '없는말')).game.score.player, 2524);   // 거절된 단어는 점수가 없다
+    assert.equal((await other.service.play(game.id, '없는말')).game.score.player, 512);    // 거절된 단어는 점수가 없다
+    const second = await other.service.play(game.id, '표범');             // 한방 → 상대 목숨 -1 → 새 라운드는 상대가 먼저 '기차'(까다로움 512점)
+    assert.deepEqual(second.game.score, { player: 2524, computer: 1524 });
   } finally { await other.stop(); }
 });
 
@@ -474,27 +542,86 @@ test('목숨: 양쪽 3개로 시작한다', async () => {
   } finally { await other.stop(); }
 });
 
-test('목숨: 상대가 이을 단어가 없으면 상대가 하나를 잃고, 3번이면 내가 이긴다', async () => {
-  const other = await startGameStack({ words: [['범인'], ['기쁨'], ['부엌']], lives: 3 });
+test('목숨: 상대가 이을 단어가 없으면 상대가 하나를 잃고, 다음 라운드는 목숨을 잃은 상대가 먼저 낸다', async () => {
+  // 단어 번호: 1 나비, 2 비누, 3 차표, 4 표범, 5 범인.  시작 단어 없음, 난수 0 → 상대가 먼저 낼 때는 1번 '나비'부터 본다
+  const other = await startGameStack({ words: [['나비'], ['비누'], ['차표'], ['표범'], ['범인']], lives: 3 });
   try {
     const { game } = await other.service.start({ player: '승부', level: 'easy' });
+    await other.service.play(game.id, '차표');                            // 상대: 표범
 
-    const first = await other.service.play(game.id, '범인');
+    const first = await other.service.play(game.id, '범인');              // 한방 → 상대 목숨 -1
     assert.deepEqual([first.accepted, first.computer, first.game.status], [true, null, 'playing']);
     assert.deepEqual(first.game.lives, { player: 3, computer: 2 });
-    assert.deepEqual(first.game.history.at(-1), { by: 'life', who: 'computer', reason: 'computer-stuck', left: 2 });
-    assert.equal(first.game.need, null);                                  // 새 판처럼 다시 시작한다
+    assert.deepEqual(first.game.history.slice(-2).map((h) => [h.by, h.word ?? h.reason]), [['life', 'computer-stuck'], ['computer', '나비']]);   // 진 상대가 먼저 냈다
+    assert.deepEqual([first.game.need, first.game.firstMove], [['비'], false]);   // 상대가 첫 수를 뒀으니 나는 한방 단어를 내도 된다
     assert.ok(first.game.remainingMs > 9000);                             // 제한 시간도 다시 채워진다
 
-    assert.equal((await other.service.play(game.id, '범인')).reject.code, 'used');   // 목숨을 잃어도 나온 단어는 다시 못 낸다
-    assert.deepEqual((await other.service.play(game.id, '기쁨')).game.lives, { player: 3, computer: 1 });
-
-    const last = await other.service.play(game.id, '부엌');
+    // 비누(한방) → 상대 목숨 -1 → 새 라운드는 나온 단어가 비워져서 상대가 '나비'를 다시 먼저 낸다
+    const third = await other.service.play(game.id, '비누');
+    assert.deepEqual([third.game.lives.computer, third.game.roundNo, third.game.history.at(-1).word], [1, 3, '나비']);
+    const last = await other.service.play(game.id, '비누');               // 비누도 다시 낼 수 있다 → 상대 목숨 0
     assert.deepEqual(last.game.lives, { player: 3, computer: 0 });
     assert.deepEqual([last.game.status, last.game.result, last.game.reason], ['over', 'win', 'computer-stuck']);
-    assert.equal(last.game.score.player, 6036);
-    assert.equal((await other.service.record(last.game.recordId)).record.score, 6036);   // 점수가 판 기록에 저장된다
+    assert.equal(last.game.score.player, 7048);                           // 차표 1,012 + 범인 2,012 + 비누 2,012 × 2
+    assert.equal((await other.service.record(last.game.recordId)).record.score, 7048);   // 점수가 판 기록에 저장된다
   } finally { await other.stop(); }
+});
+
+test('첫 턴 한방 금지: 라운드의 첫 단어로 한방 단어를 내면 받지 않는다', async () => {
+  const { game } = await service.start({ player: '첫턴', level: 'easy' });
+  assert.equal(game.firstMove, true);
+  const rejected = await service.play(game.id, '범인');                 // '인'으로 시작하는 단어가 없다
+  assert.deepEqual([rejected.accepted, rejected.reject.code], [false, 'first-kill']);
+  assert.equal(await redis.get('game:' + game.id + ':used:범인'), null); // 받지 않았으니 나온 단어도 아니다
+  assert.equal(rejected.game.lives.player, 1);                          // 목숨은 그대로, 시간만 흐른다
+  assert.equal((await service.play(game.id, '기차')).accepted, true);
+  await service.giveUp(game.id);
+});
+
+test('첫 턴 한방 금지 · 선공: 상대가 먼저면 첫 수로 한방 단어를 내지 않는다 (절대적이어도)', async () => {
+  // 시작 단어 '기차' (1번). 후보: 차륜(끝내기) · 차표(공격). 절대적이면 원래 차륜을 낸다
+  const other = await startGameStack({ words: [['기차'], ['차륜', true], ['차표'], ['표범']], randomStart: true, coin: () => 0.9 });
+  try {
+    const { game } = await other.service.start({ player: '후공', level: 'hard' });
+    assert.equal(game.starter, 'computer');
+    assert.deepEqual(game.history.map((h) => [h.by, h.word]), [['start', '기차'], ['computer', '차표']]);
+    assert.deepEqual([game.need, game.firstMove], [['표'], false]);
+  } finally { await other.stop(); }
+});
+
+test('라운드: 목숨을 잃을 때마다 라운드 번호가 오르고, 판의 길이는 목숨 수로 정해진다', async () => {
+  const quick = await startGameStack({ words: WORDS, turnMs: 200, lives: 2 });
+  try {
+    const { game } = await quick.service.start({ player: '라운드', level: 'easy' });
+    assert.equal(game.roundNo, 1);
+    await sleep(300);
+    const first = await quick.service.get(game.id);                       // 시간 초과 → 1라운드 끝
+    assert.deepEqual([first.game.status, first.game.roundNo, first.game.lives.player], ['playing', 2, 1]);
+    await sleep(300);
+    const over = await quick.service.get(game.id);                        // 목숨 0 → 판이 끝난다
+    assert.deepEqual([over.game.status, over.game.result, over.game.reason], ['over', 'lose', 'timeout']);
+  } finally { await quick.stop(); }
+});
+
+test('목숨 수: 판마다 1~5개 중에서 고르고, 그 밖의 값이면 기본값을 쓴다', async () => {
+  const picks = [];
+  for (const lives of [1, 3, 5, 0, 6, 2.5, '4', undefined]) {
+    const { game } = await service.start({ player: 'l', lives });
+    picks.push(game.lives.player === game.lives.computer ? game.lives.player : 'x');
+    await service.giveUp(game.id);
+  }
+  assert.deepEqual(picks, [1, 3, 5, 1, 1, 1, 4, 1]);                  // 이 테스트 묶음의 기본값은 1 (helper.js)
+});
+
+test('선공: 첫 라운드는 coin 으로 정한다 (0.5 미만이면 플레이어)', async () => {
+  for (const [value, starter] of [[0, 'player'], [0.49, 'player'], [0.5, 'computer'], [0.99, 'computer']]) {
+    const other = await startGameStack({ words: [['나비'], ['비누']], coin: () => value });
+    try {
+      const { game } = await other.service.start({ player: 'p', level: 'easy' });
+      assert.equal(game.starter, starter, String(value));
+      assert.equal(game.history.some((h) => h.by === 'computer'), starter === 'computer');
+    } finally { await other.stop(); }
+  }
 });
 
 test('목숨: 내가 이을 단어가 없으면 내가 하나를 잃고, 3번이면 진다', async () => {
@@ -533,7 +660,7 @@ test('목숨: 시간 초과면 하나를 잃고 제한 시간이 다시 채워�
   } finally { await quick.stop(); }
 });
 
-test('목숨: 목숨을 잃으면 아직 나오지 않은 단어로 새 시작 단어가 나온다', async () => {
+test('라운드: 새 라운드에서는 나온 단어가 비워진다 (끄투처럼 라운드마다)', async () => {
   // 단어 번호: 1 범인, 2 기차, 3 차표, 4 표범.  난수 0.3 → 2번 '기차'
   const other = await startGameStack({ words: [['범인'], ['기차'], ['차표'], ['표범']], lives: 3, randomStart: true, random: () => 0.3 });
   try {
@@ -542,9 +669,11 @@ test('목숨: 목숨을 잃으면 아직 나오지 않은 단어로 새 시작 �
     const first = await other.service.play(game.id, '차표');              // 상대: 표범 → '범인' 이 남아 있다
     assert.equal(first.computer.word, '표범');
     const second = await other.service.play(game.id, '범인');             // 상대가 이을 단어 없음 → 상대 목숨 -1
-    assert.equal(second.game.lives.computer, 2);
-    // 새 시작 단어를 뽑으려 하지만 '기차'는 이미 나왔고 남은 단어가 없어, 시작 단어 없이 이어 간다
-    assert.deepEqual([second.game.history.at(-1).by, second.game.need], ['life', null]);
+    // 새 라운드: 나온 단어가 비워져 '기차'가 다시 시작 단어가 되고, 진 상대가 먼저 '차표'를 낸다
+    assert.deepEqual(second.game.history.slice(-3).map((h) => h.by + ':' + (h.word ?? h.who)), ['life:computer', 'start:기차', 'computer:차표']);
+    assert.deepEqual([second.game.roundNo, second.game.need, second.game.status], [2, ['표'], 'playing']);
+    assert.ok(second.trace.some((t) => t.label.startsWith('새 라운드 2:')));
+    assert.equal((await other.service.play(game.id, '표범')).accepted, true);    // 1라운드에 나온 '표범'을 다시 낼 수 있다
   } finally { await other.stop(); }
 });
 
