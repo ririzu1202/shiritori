@@ -257,12 +257,11 @@ flowchart TB
 '단어 내기'를 한 번 누르면 게임 서버가 미니 레디스에 보내는 명령 순서입니다 (`game/service.js` 의 `play`).
 
 ```mermaid
-%%{init: {"sequence": {"mirrorActors": false}}}%%
 sequenceDiagram
   participant B as 브라우저
+  participant D as 🗄️ 미니 DBMS
   participant G as 게임 서버
   participant R as 🧠 미니 레디스
-  participant D as 🗄️ 미니 DBMS
   B->>G: POST /api/games/7/words { 기차 }
   G->>R: SET game:7:lock 1 nx (ttl 5초)
   R-->>G: OK  (이미 있으면 → 409)
@@ -288,7 +287,6 @@ sequenceDiagram
   G->>R: DEL game:7:lock
   G-->>B: { accepted, computer, game, trace }
 ```
-
 1. **잠금**: `nx` 로 잠금 키를 만든 요청만 들어갑니다 (6장).
 2. **시간 확인**: `turn` 키가 없으면(`-2`) 시간 초과입니다 (3장).
 3. **판정**: 형식 → 시작 글자 → `used` 키 → `word:` 캐시 순서. 앞의 조건을 통과한 단어만 사전을 찾아봅니다.
