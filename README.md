@@ -33,6 +33,8 @@ flowchart LR
   G -. "캐시에 없을 때만" .-> D["🗄️ 미니 DBMS<br/>파일, 오래 보관"]
 
   style R fill:#DC382D,color:#fff,stroke:#A41E11
+  D ~~~ PAD["확대 버튼 자리"]
+  style PAD fill:none,stroke:none,color:transparent
 ```
 
 게임 서버는 미니 레디스를 **HTTP API 로만** 씁니다. 실제 Redis 의 RESP 프로토콜이 아니라, Redis 와 같은 키-값 사용 패턴을 이 프로젝트의 HTTP + JSON API 로 구현한 것입니다.
