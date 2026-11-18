@@ -225,12 +225,11 @@ flowchart TB
 '단어 내기'를 한 번 누르면 게임 서버가 미니 레디스에 보내는 명령 순서입니다 (`game/service.js` 의 `play`).
 
 ```mermaid
-%%{init: {"sequence": {"mirrorActors": false}}}%%
 sequenceDiagram
   participant B as 브라우저
+  participant D as 🗄️ 미니 DBMS
   participant G as 게임 서버
   participant R as 🧠 미니 레디스
-  participant D as 🗄️ 미니 DBMS
   B->>G: POST /api/games/7/words { 기차 }
   G->>R: SET game:7:lock 1 nx (ttl 5초)
   R-->>G: OK  (이미 있으면 → 409)
