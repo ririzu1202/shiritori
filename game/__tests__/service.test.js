@@ -221,46 +221,61 @@ test('라운드 시간: 단어를 낼 때마다 그 차례에 쓴 시간만큼 �
   } finally { await quick.stop(); }
 });
 
-test('생각 시간: 상대는 생각한 뒤 받아치고, 그 시간만큼 라운드 시간이 준다', async () => {
-  const waited = [], lefts = [];
-  const slow = await startGameStack({ words: WORDS, think: (left) => { lefts.push(left); return 700; }, sleep: async (ms) => { waited.push(ms); } });
+test('생각 시간: 내 단어는 바로 들어가고, 상대는 생각 시간(차례 키 TTL)이 지난 뒤 둔다', async () => {
+  const lefts = [];
+  const slow = await startGameStack({ words: WORDS, think: (left) => { lefts.push(left); return 300; } });
   try {
     const { game } = await slow.service.start({ player: '생각', level: 'easy', round: 60 });
-    const turn = await slow.service.play(game.id, '기차');                                 // 상대: 차표
-    assert.deepEqual(waited, [700]);                                                         // 실제로 기다린 시간
-    assert.ok(lefts[0] <= 60_000 && lefts[0] > 59_000, String(lefts[0]));                   // 생각 시간은 그때 남은 라운드 시간으로 정한다
-    assert.equal(turn.computer.thinkMs, 700);
-    assert.equal(turn.game.history.at(-1).thinkMs, 700);
-    assert.ok(turn.game.roundRemainingMs <= 60_000 - 700 && turn.game.roundRemainingMs > 58_000, String(turn.game.roundRemainingMs));
-    assert.equal(turn.trace.find((t) => t.source === 'think').ms, 700);
+    const turn = await slow.service.play(game.id, '기차');
+    assert.deepEqual([turn.accepted, turn.computer, turn.game.turn], [true, null, 'computer']);   // 상대는 아직 생각하는 중
+    assert.equal(turn.game.history.at(-1).word, '기차');                                      // 내 단어는 바로 들어갔다
+    assert.ok(turn.game.remainingMs <= 300 && turn.game.remainingMs > 150, String(turn.game.remainingMs));   // 차례 키 TTL = 생각 시간
+    assert.equal(turn.game.turnRemainingMs, 10_000);                                          // 내 차례 막대는 줄지 않는다
+    assert.ok(lefts[0] <= 60_000 && lefts[0] > 59_000, String(lefts[0]));                     // 생각 시간은 그때 남은 라운드 시간으로 정한다
+
+    const early = await slow.service.play(game.id, '차표');                                   // 상대 차례에는 단어를 받지 않는다
+    assert.equal(early.reject.code, 'not-your-turn');
+    assert.equal((await slow.service.get(game.id)).game.turn, 'computer');
+
+    await sleep(350);
+    const after = await slow.service.get(game.id);                                            // 키가 사라진 뒤 처음 묻는 요청에서 상대가 둔다
+    const reply = after.game.history.at(-1);
+    assert.deepEqual([after.game.turn, reply.by, reply.word, reply.thinkMs], ['player', 'computer', '차표', 300]);
+    assert.ok(after.game.roundRemainingMs <= 60_000 - 300 && after.game.roundRemainingMs > 58_000, String(after.game.roundRemainingMs));
+    assert.ok(after.game.remainingMs > 9_900, String(after.game.remainingMs));                 // 이제 내 차례 10초
+    assert.equal(after.trace.find((t) => t.source === 'think').ms, 300);
     await slow.service.giveUp(game.id);
   } finally { await slow.stop(); }
 });
 
 test('생각 시간: 상대가 생각하는 동안 라운드 시간이 다 되면 상대가 목숨을 잃는다 (round-time)', async () => {
-  const waited = [];
-  const slow = await startGameStack({ words: WORDS, think: () => Infinity, sleep: async (ms) => { waited.push(ms); } });
+  const slow = await startGameStack({ words: WORDS, secondMs: 20, think: () => 1_000 });      // 라운드 10초 → 200ms, 생각 1초
   try {
     const { game } = await slow.service.start({ player: '시간', level: 'easy', round: 10 });
     const turn = await slow.service.play(game.id, '기차');
-    assert.equal(turn.accepted, true);
-    assert.equal(turn.computer, null);                                                       // 다 생각하지 못해 단어를 내지 못했다
-    assert.ok(waited[0] > 9_000 && waited[0] <= 10_000, String(waited[0]));                  // 남은 라운드 시간까지만 기다린다
-    assert.deepEqual([turn.game.status, turn.game.result, turn.game.reason], ['over', 'win', 'round-time']);
-    assert.equal(turn.game.history.at(-1).who, 'computer');
+    assert.equal(turn.game.turn, 'computer');
+    assert.ok(turn.game.remainingMs <= 200, String(turn.game.remainingMs));                   // 키는 라운드가 끝나는 때 사라진다
+    await sleep(300);
+    const after = await slow.service.get(game.id);
+    assert.deepEqual([after.game.status, after.game.result, after.game.reason], ['over', 'win', 'round-time']);
+    assert.equal(after.game.history.at(-1).who, 'computer');
+    assert.equal(after.game.history.filter((h) => h.by === 'computer').length, 0);           // 다 생각하지 못해 단어를 내지 못했다
   } finally { await slow.stop(); }
 });
 
 test('생각 시간: 상대가 라운드를 먼저 낼 때도 생각한 뒤 낸다', async () => {
-  const waited = [];
-  const slow = await startGameStack({ words: WORDS, coin: () => 0.9, randomStart: true, think: () => 400, sleep: async (ms) => { waited.push(ms); } });
+  const slow = await startGameStack({ words: WORDS, coin: () => 0.9, randomStart: true, think: () => 300 });
   try {
     const { game } = await slow.service.start({ player: '선공', level: 'easy', round: 30 });
-    const opening = game.history.find((h) => h.by === 'computer');
-    assert.ok(opening, JSON.stringify(game.history));
-    assert.equal(opening.thinkMs, 400);
-    assert.deepEqual(waited, [400]);
-    assert.ok(game.roundRemainingMs <= 30_000 - 400, String(game.roundRemainingMs));
+    assert.equal(game.turn, 'computer');
+    assert.equal(game.history.some((h) => h.by === 'computer'), false);
+    await sleep(350);
+    const after = await slow.service.get(game.id);
+    const opening = after.game.history.find((h) => h.by === 'computer');
+    assert.ok(opening, JSON.stringify(after.game.history));
+    assert.equal(opening.thinkMs, 300);
+    assert.equal(after.game.turn, 'player');
+    assert.ok(after.game.roundRemainingMs <= 30_000 - 300, String(after.game.roundRemainingMs));
     await slow.service.giveUp(game.id);
   } finally { await slow.stop(); }
 });

@@ -23,9 +23,9 @@ export function makeDataDir() {
  * 게임 한 벌을 띄운다. words: 미리 등록할 단어 [['기차'], ['기쁨', true] …]  (두 번째 값이 true 면 끝내기 단어)
  * coin: 첫 라운드의 선공을 정하는 난수 (기본 0 → 플레이어가 먼저). secondMs: 라운드 시간 1초의 길이 (기본 1000. 줄이면 라운드 시간이 빨리 끝난다)
  * random: 상대가 단어를 고를 때 쓰는 난수 (기본 0 → 항상 후보의 첫 번째). randomStart: 시작 단어를 무작위로 제시할지 (기본 false). lives: 목숨 수 (기본 1 → 한 번 지면 판이 끝난다)
- * think: 남은 라운드 시간 → 상대가 생각할 시간 (기본 0 → 바로 받아친다). sleep: 기다리는 함수 (기본은 실제로 기다림)
+ * think: 남은 라운드 시간 → 상대가 생각할 시간 (기본 0 → 기다리지 않고 바로 받아친다)
  */
-export async function startGameStack({ words = [], turnMs = 10_000, random = () => 0, wordFiles = null, randomStart = false, lives = 1, secondMs = 1000, coin = () => 0, think = () => 0, sleep: wait } = {}) {
+export async function startGameStack({ words = [], turnMs = 10_000, random = () => 0, wordFiles = null, randomStart = false, lives = 1, secondMs = 1000, coin = () => 0, think = () => 0 } = {}) {
   const dir = makeDataDir();
   const dbServer = await createDbServer({ dataDir: dir, poolSize: 2, maxRows: 100_000 });
   const dbUrl = await listenDb(dbServer.server);
@@ -33,7 +33,7 @@ export async function startGameStack({ words = [], turnMs = 10_000, random = () 
   const redisServer = createApiServer(store);
   const redisUrl = await listen(redisServer);
   const redis = createClient(redisUrl), db = createDb(dbUrl);
-  const service = createGameService({ redis, db, turnMs, random, wordFiles, randomStart, lives, secondMs, coin, think, ...(wait ? { sleep: wait } : {}) });
+  const service = createGameService({ redis, db, turnMs, random, wordFiles, randomStart, lives, secondMs, coin, think });
   for (const [word, finisher] of words) await service.register(word, finisher === true);
 
   return {

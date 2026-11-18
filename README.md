@@ -187,7 +187,7 @@ word-chain/
 | 키 | 값 | 만료 | 쓰이는 기능 |
 |---|---|---|---|
 | `game:<번호>` | 진행 중인 판의 상태 (목숨, 점수, 낸 단어) | 30분 (끝난 판은 10분) | 저장 · 조회 |
-| `game:<번호>:turn` | 플레이어 차례 표시 | **10초** (라운드 남은 시간이 더 짧으면 그만큼) | 만료. 사라져 있으면 시간 초과 |
+| `game:<번호>:turn` | 지금 차례 표시 (내 차례 · 상대가 생각하는 중) | 내 차례 **10초** (라운드 남은 시간이 더 짧으면 그만큼) · 상대 차례 0.1~1초 | 만료. 사라져 있으면 내 차례는 시간 초과, 상대 차례는 상대가 단어를 냄 |
 | `game:<번호>:used:<단어>` | 이번 라운드에 나온 단어 (새 라운드에 지움) | 30분 | 조회 (있으면 "이미 나온 단어") |
 | `game:<번호>:lock` | 처리 중 표시 | 5초 | `nx` (없을 때만 저장) |
 | `word:<단어>` | 사전에 있는지 `{ known, finisher }` | 60초 | 캐시 |
@@ -378,7 +378,7 @@ sequenceDiagram
 
 - 지연 삭제만 있으면 아무도 다시 찾지 않는 키(도중에 창을 닫고 떠난 판의 `turn` 등)가 서버를 다시 켤 때까지 메모리에 남고, 주기 삭제만 있으면 청소 전까지 만료된 값이 보입니다. 둘을 같이 써서 **만료된 값은 절대 돌려주지 않으면서** 메모리도 회수합니다.
 - 화면의 시계는 보여 주기용입니다. 0 이 되면 `GET /api/games/:id` 로 물어보고, 서버는 `turn` 키가 사라져 있으면 그때 목숨을 뺍니다. 화면을 조작해도 시간을 늘릴 수 없습니다.
-- **라운드 시간도 같은 키 하나로 잽니다.** 차례 키의 TTL 을 `min(10초, 라운드 남은 시간)` 으로 겁니다. 단어를 받으면 이번 차례에 쓴 시간(건 TTL − 남은 TTL)을 라운드 시간에서 빼고, 라운드 시간 때문에 키가 먼저 사라졌으면 `round-time` 으로 목숨을 뺍니다 (`game/service.js` 의 `turnLimit` · `spend`). 화면의 차례 막대는 매 차례 10초로 다시 차고, 라운드 막대는 따로 줄어듭니다. 상대가 생각하는 시간(남은 라운드 시간에 따라 0.1~1초)도 라운드 시간에서 빼고, 생각하는 동안 라운드 시간이 다 되면 상대가 `round-time` 으로 목숨을 잃습니다 (부록 B).
+- **라운드 시간도 같은 키 하나로 잽니다.** 차례 키의 TTL 을 `min(10초, 라운드 남은 시간)` 으로 겁니다. 단어를 받으면 이번 차례에 쓴 시간(건 TTL − 남은 TTL)을 라운드 시간에서 빼고, 라운드 시간 때문에 키가 먼저 사라졌으면 `round-time` 으로 목숨을 뺍니다 (`game/service.js` 의 `turnLimit` · `spend`). 화면의 차례 막대는 매 차례 10초로 다시 차고, 라운드 막대는 따로 줄어듭니다. **상대가 생각하는 시간(남은 라운드 시간에 따라 0.1~1초)도 같은 차례 키로 잽니다.** 상대 차례가 되면 차례 키에 생각 시간을 TTL 로 걸고, 키가 사라진 뒤 처음 오는 요청에서 상대가 단어를 냅니다 (시간 초과와 같은 방식). 생각한 시간도 라운드 시간에서 빠지고, 생각하는 동안 라운드 시간이 다 되면 상대가 `round-time` 으로 목숨을 잃습니다 (부록 B).
 
 <details>
 <summary><b>더 알아보기 — 시간 초과가 반영되는 순간</b></summary>
@@ -550,7 +550,7 @@ sequenceDiagram
 1. **잠금**: `nx` 로 잠금 키를 만든 요청만 들어갑니다 (6장).
 2. **시간 확인**: `turn` 키가 없으면(`-2`) 시간 초과입니다 (3장).
 3. **판정**: 형식 → 시작 글자 → `used` 키 → `word:` 캐시 순서. 앞의 조건을 통과한 단어만 사전을 찾아봅니다. 통과하면 이을 단어를 세고, 라운드의 첫 단어인데 한방(이을 단어 0개)이면 거절합니다 (첫 턴 한방 금지).
-4. **상대 차례**: 남은 라운드 시간에 따라 0.1~1초 생각한 뒤(부록 B), `first:<끝 글자>` 캐시에서 후보를 꺼내 이번 라운드에 나온 단어(`used`)를 빼고, 후보마다 등급을 매겨 하나를 고릅니다 (고르는 법은 부록 B). 두음법칙이 있으면 `first:리`, `first:이` 처럼 두 키를 봅니다.
+4. **상대 차례**: 내 단어를 받아들이면 바로 답하고, `turn` 키에 상대의 생각 시간(0.1~1초, 부록 B)을 겁니다. 그 키가 사라진 뒤 화면이 판 상태를 물으면(`GET`), `first:<끝 글자>` 캐시에서 후보를 꺼내 이번 라운드에 나온 단어(`used`)를 빼고, 후보마다 등급을 매겨 하나를 고릅니다 (고르는 법은 부록 B). 두음법칙이 있으면 `first:리`, `first:이` 처럼 두 키를 봅니다.
 5. **새 차례**: 판 상태를 저장하고 `turn` 키에 다시 10초(라운드 남은 시간이 더 짧으면 그만큼)를 겁니다.
 6. **응답의 `trace`**: 위 단계마다 캐시였는지 DBMS 였는지와 걸린 시간을 담아 화면에 보여 줍니다.
 
@@ -559,7 +559,7 @@ sequenceDiagram
 <details>
 <summary><b>재구현용 — 판 상태 모양과 판 · 라운드 · 단어 · 목숨 순서 (<code>game/service.js</code>)</b></summary>
 
-`createGameService({ redis, db, turnMs = 10_000, random = Math.random, wordFiles = null, randomStart = true, lives = 3, secondMs = 1000, coin = random, think, sleep })`. `secondMs` 는 라운드 시간 1초의 길이(테스트에서 줄임), `coin` 은 첫 선공을 정하는 난수, `think` 는 남은 라운드 시간 → 상대의 생각 시간(기본 `thinkTime` 을 `secondMs` 에 맞춰 늘이고 줄인 것), `sleep` 은 기다리는 함수(테스트에서 기록만 하게 바꿈)입니다.
+`createGameService({ redis, db, turnMs = 10_000, random = Math.random, wordFiles = null, randomStart = true, lives = 3, secondMs = 1000, coin = random, think })`. `secondMs` 는 라운드 시간 1초의 길이(테스트에서 줄임), `coin` 은 첫 선공을 정하는 난수, `think` 는 남은 라운드 시간 → 상대의 생각 시간(기본 `thinkTime` 을 `secondMs` 에 맞춰 늘이고 줄인 것. 0 이면 기다리지 않고 바로 둠, 테스트에서 씀)입니다.
 
 **판 상태** (`game:<번호>` 의 값)
 
@@ -567,7 +567,8 @@ sequenceDiagram
 |---|---|
 | `id` · `player` · `level` | 판 번호 · 이름(앞뒤 공백 뺀 12자, 비면 '손님') · 난이도 |
 | `round` · `roundMs` · `roundLeftMs` · `roundNo` | 라운드 시간(초) · 그것을 ms 로 · 이번 라운드에 남은 ms · 몇 번째 라운드 |
-| `turnLimitMs` | 지금 차례 키에 건 TTL |
+| `turn` · `turnLimitMs` | 지금 차례 `'player'` / `'computer'` · 차례 키에 건 TTL |
+| `thinkMs` · `thinkLate` | 상대 차례의 생각 시간(라운드 남은 시간까지) · 생각을 마치기 전에 라운드 시간이 끝나는가 |
 | `status` · `result` · `reason` | `'playing'` / `'over'` · `'win'` / `'lose'` / `null` · 끝난 이유 |
 | `need` | 다음 단어가 시작해야 할 글자 배열, 없으면 `null` (아무 단어) |
 | `turns` · `lives` · `livesStart` · `score` | 받아들인 단어 수 · `{ player, computer }` · 처음 목숨 수 · `{ player, computer }` |
@@ -575,7 +576,7 @@ sequenceDiagram
 | `history` · `recordId` | 기록 목록 · 끝났을 때 DBMS 의 `games` id |
 
 - `history` 한 줄: 단어 `{ by: 'start' | 'player' | 'computer', word, options, grade, points }` (상대는 `finisher` · `thinkMs` 도), 목숨 `{ by: 'life', who, reason, left }`
-- 화면에 보낼 때 더하는 값: `remainingMs` = 차례 키의 남은 TTL(실제 마감까지), `turnRemainingMs` = `turnMs − (turnLimitMs − remainingMs)` (차례 막대), `roundRemainingMs` = `roundLeftMs − (turnLimitMs − remainingMs)` (라운드 막대), `turnMs`. 끝난 판이면 셋 다 0
+- 화면에 보낼 때 더하는 값: `remainingMs` = 차례 키의 남은 TTL(실제 마감까지), `turnRemainingMs` = `turnMs − (turnLimitMs − remainingMs)` (차례 막대, 상대 차례면 `turnMs` 그대로), `roundRemainingMs` = `roundLeftMs − (turnLimitMs − remainingMs)` (라운드 막대), `turnMs`. 끝난 판이면 셋 다 0
 - `trace` 한 줄: `{ label, key, source: 'cache' | 'db' | 'redis' | 'think', plan, ms }` (`think` 는 상대가 생각한 시간)
 
 **판 열기 · 라운드 열기**
@@ -595,11 +596,9 @@ openRound(state, used, starter):
   first = randomStart 면 pickStartWord(used)
   need = null, roundLeftMs = roundMs, firstMove = true, starter 기록
   first 가 있으면: history 에 시작 단어(0점), need = nextStartChars(first), SET game:<번호>:used:<first>
-  starter 가 상대면: 먼저 thinkFirst (아래). 라운드 시간이 다 되면 → loseLife(상대, 'round-time')
-    시작 단어 뒤를 잇는 상대의 한 수 (시작 단어가 없으면 pickStartWord 로 고른 단어)
-    낼 단어가 없으면 → loseLife(상대, 'computer-stuck'),  상대 단어의 open 이 0 → loseLife(플레이어, 'no-word')
-  turnLimitMs = max(1, min(turnMs, roundLeftMs))
-  SET game:<번호> (30분) → SET game:<번호>:turn 1 (ttl turnLimitMs)
+  starter 가 상대면: computerTurn (아래) 하고 끝
+  아니면: turn = 'player', turnLimitMs = max(1, min(turnMs, roundLeftMs))
+          SET game:<번호> (30분) → SET game:<번호>:turn 1 (ttl turnLimitMs)
 ```
 
 **단어 내기** `play(id, word)`
@@ -607,6 +606,7 @@ openRound(state, used, starter):
 ```
 withLock(id):                                     ← SET game:<번호>:lock 1 nx ttl 5초, 실패 409, finally DEL
   state = GET game:<번호>  (없으면 404, 끝난 판이면 409)
+  turn 이 'computer' → TTL turn 이 -2 면 computerReply 를 먼저 반영, 거절 'not-your-turn'
   remaining = TTL game:<번호>:turn
   -2 → loseLife(플레이어, turnLimitMs < turnMs ? 'round-time' : 'timeout'), 거절 'timeout'
   형식 · 시작 글자 · used(GET …:used:<단어>) 를 통과하면 lookup
@@ -614,21 +614,29 @@ withLock(id):                                     ← SET game:<번호>:lock 1 n
   usedWords = KEYS game:<번호>:used: + 이 단어,  mine = continuations(word, usedWords)
   firstMove 이고 (mine.total = 0 또는 끝내기 단어) → 거절 'first-kill'
   roundLeftMs −= (turnLimitMs − remaining)                      ← 이번 차례에 쓴 시간
-  SET …:used:<단어>, history · 점수 · turns, firstMove = false
-  thinkFirst (아래). 라운드 시간이 다 되면 → loseLife(상대, 'round-time')
-  상대의 한 수 (아래). 없으면 → loseLife(상대, 'computer-stuck')
-  상대 단어의 open 이 0 → loseLife(플레이어, 'no-word')
-  turnLimit → SET game:<번호> → SET …:turn
-응답: { accepted, reject: { code, message } | null, computer: { word, finisher, thinkMs } | null, game, trace }
+  SET …:used:<단어>, history · 점수 · turns, firstMove = false, need = nextStartChars(word)
+  computerTurn (아래)                                           ← 내 단어는 여기서 바로 답한다
+응답: { accepted, reject: { code, message } | null, computer, game, trace }
+      computer 는 보통 null (상대는 생각 시간이 지난 뒤 get 에서 둠). 생각 시간 0 이면 여기서 둔 { word, finisher, thinkMs }
 ```
 
 **상대의 생각 · 한 수**
 
 ```
-thinkFirst(state):                                                ← 상대의 생각 시간
+computerTurn(state):                                              ← 상대 차례를 연다
   left = roundLeftMs,  wanted = think(left)                       ← 기본 thinkTime (부록 B)
-  spent = min(wanted, left) 만큼 sleep,  roundLeftMs −= spent,  trace 에 { source: 'think', ms: spent }
-  wanted < left 면 시간 안 → 한 수를 둔다 (thinkMs = spent). 아니면 상대가 'round-time' 으로 목숨 −1
+  turn = 'computer',  thinkLate = wanted ≥ left,  thinkMs = min(wanted, left),  turnLimitMs = max(1, thinkMs)
+  wanted 가 0 이면 바로 computerReply
+  아니면 SET game:<번호> → SET game:<번호>:turn 1 (ttl turnLimitMs)  ← 키가 사라지면 상대가 둔다
+
+computerReply(state):                                             ← 차례 키가 사라진 뒤 (get · play 에서)
+  roundLeftMs −= thinkMs,  turn = 'player',  trace 에 { source: 'think', ms: thinkMs }
+  thinkLate 면 → loseLife(상대, 'round-time')
+  usedWords = KEYS game:<번호>:used:
+  need 가 있으면: 마지막 단어(내 단어 또는 시작 단어) 뒤를 잇는 상대의 한 수 (아래)
+  없으면: pickStartWord 로 고른 단어를 상대가 낸다
+  낼 단어가 없으면 → loseLife(상대, 'computer-stuck'),  상대 단어의 open 이 0 → loseLife(플레이어, 'no-word')
+  아니면 turnLimit → SET game:<번호> → SET …:turn                  ← 이제 내 차례 10초
 
 counts = 등급 표 (부록 B). 못 만들었으면 등급 없이 (끝내기 단어만 한방으로)
 grader(단어) = gradeOf( nextStartChars(단어) 의 글자마다 counts 를 더한 값 )
@@ -650,7 +658,7 @@ finish(state, result, reason):
   status = 'over', INSERT INTO games (player, level, turns, result, reason, 플레이어 점수) → recordId
   DEL …:turn, delByPrefix …:used:, DEL ranking, INCR stats:games, SET game:<번호> (10분)
 
-get(id):    끝났거나 TTL turn ≠ -2 면 그대로. -2 면 잠금 → 다시 읽어 여전히 -2 면 플레이어 목숨 −1 (두 번 잃지 않게)
+get(id):    끝났거나 TTL turn ≠ -2 면 그대로. -2 면 잠금 → 다시 읽어 여전히 -2 면: turn 이 'computer' 면 computerReply, 아니면 플레이어 목숨 −1 (두 번 반영하지 않게)
 giveUp(id): 잠금 → 진행 중이면 finish('lose', 'give-up')
 ```
 
@@ -928,7 +936,7 @@ sequenceDiagram
 
 | 확인한 것 | 예 |
 |---|---|
-| TTL | 제한 시간이 지나면 목숨 -1, 시간 안에 내면 다시 10초, 같은 시간 초과로 두 번 잃지 않음, 라운드 시간이 먼저 끝나면 `round-time`, 상대가 생각한 시간만큼 라운드 시간이 줄고 생각하는 동안 끝나면 상대가 `round-time` |
+| TTL | 제한 시간이 지나면 목숨 -1, 시간 안에 내면 다시 10초, 같은 시간 초과로 두 번 잃지 않음, 라운드 시간이 먼저 끝나면 `round-time`, 내 단어는 바로 들어가고 상대 단어는 생각 시간(차례 키 TTL)이 지난 뒤, 상대가 생각한 시간만큼 라운드 시간이 줄고 생각하는 동안 끝나면 상대가 `round-time` |
 | 캐시 | 처음은 DBMS 전체 탐색, 두 번째는 레디스 |
 | 무효화 | "없는 단어"로 캐시된 결과가 등록 직후 사라짐, 삭제한 단어를 상대가 바로 내지 않음, 새 라운드 · 판 종료 때 `used` 키가 지워짐 |
 | 동시성 | 같은 판에 동시 제출 8번 → 1번만 처리, 12판 동시 진행, 같은 단어 동시 등록 20번 → 1건 |
@@ -964,7 +972,7 @@ sequenceDiagram
 | 6 | 캐시 (4장) | 첫 조회 MISS → 두 번째 HIT / 같은 키를 동시에 놓친 요청이 원본을 1번만 읽음 / 레디스가 꺼져도 원본 값 |
 | 7 | 미니 DBMS 연결 (부록 A) | 게임이 보내는 SQL 이 약속한 모양으로 답함 |
 | 8 | 규칙 (부록 B) | 두음법칙 표 / 거절 순서 / 글자 수 점수 값 / 상대가 고르는 비율 (2만 번 뽑기) |
-| 9 | 혼자 하기 (5장) | 등록 → 무효화로 "없는 단어" 캐시가 바로 사라짐 / 10초 지나면 목숨 −1 / 동시 제출 8번 → 1번만 / 12판 동시 시작 번호 겹침 없음 / 첫 턴 한방 거절 / 진 쪽 선공 / 라운드가 바뀌면 단어 다시 낼 수 있음 / 상대가 생각한 시간만큼 라운드가 줄고, 생각하다 라운드가 끝나면 상대 목숨 −1 |
+| 9 | 혼자 하기 (5장) | 등록 → 무효화로 "없는 단어" 캐시가 바로 사라짐 / 10초 지나면 목숨 −1 / 동시 제출 8번 → 1번만 / 12판 동시 시작 번호 겹침 없음 / 첫 턴 한방 거절 / 진 쪽 선공 / 라운드가 바뀌면 단어 다시 낼 수 있음 / 내 단어는 바로, 상대 단어는 생각 시간 뒤 / 상대가 생각한 시간만큼 라운드가 줄고, 생각하다 라운드가 끝나면 상대 목숨 −1 |
 | 10 | 로그인 (7장) | 토큰 없이 등록 401 / 30분 유지 / 1분 안에 5번 틀리면 429 |
 | 11 | 게임 HTTP (부록 D) | 화면 파일 · 경로 · 오류 상태 |
 | 12 | 화면 (부록 C) | 혼자 하기 한 판 / 새로고침해도 로그인 유지 |
@@ -1110,7 +1118,7 @@ sequenceDiagram
 
 **라운드 시간.** 판을 시작하기 전에 끄투의 선택지(10 · 30 · 60 · 90 · 120 · 150초, 기본 60초, JJoriping/KKuTu `kkutu.pug` 의 라운드 시간 목록) 중 하나를 고릅니다. 내 차례에 쓴 시간과 상대가 생각한 시간만큼 줄고, 한 차례 제한(10초)은 라운드 남은 시간보다 길어지지 않습니다. 라운드 시간이 다 되면 그때 차례인 쪽이 목숨을 잃고(`round-time`, 상대가 생각하는 중이면 상대), 새 라운드에서 다시 채워집니다. 화면에는 막대가 두 개 있습니다: 차례 막대는 매 차례 10초로 다시 차고, 라운드 막대는 따로 줄어듭니다. 둘 중 먼저 0 이 되는 쪽에서 목숨을 잃습니다. 서로 한방 단어를 몰라 끝없이 이어지는 판을 끊기 위해 넣었습니다.
 
-**상대의 생각 시간.** 상대는 바로 받아치지 않고, 남은 라운드 시간에 따라 생각한 뒤 냅니다. 남은 시간이 10초 이상이면 0.5~1초, 0초에 가까울수록 0.1~0.2초이고, 그 사이는 남은 시간에 비례합니다 (5초 남으면 0.3~0.6초). 생각한 시간도 라운드 시간에서 빠지므로, 라운드 끝 무렵에는 상대 차례에 라운드 시간이 끝나 상대가 목숨을 잃을 수 있습니다. 전에는 상대가 바로 받아쳐서 라운드 시간은 늘 내 차례에 끝났고, 상대의 목숨은 한방 단어로만 뺏을 수 있었습니다. 화면은 답이 0.15초 넘게 늦으면 "상대가 생각하는 중…"을 띄우고, 받은 뒤에는 생각한 시간(예: 0.7초)을 안내와 낸 단어 목록에 보여 줍니다.
+**상대의 생각 시간.** 상대는 바로 받아치지 않고, 남은 라운드 시간에 따라 생각한 뒤 냅니다. 남은 시간이 10초 이상이면 0.5~1초, 0초에 가까울수록 0.1~0.2초이고, 그 사이는 남은 시간에 비례합니다 (5초 남으면 0.3~0.6초). 생각한 시간도 라운드 시간에서 빠지므로, 라운드 끝 무렵에는 상대 차례에 라운드 시간이 끝나 상대가 목숨을 잃을 수 있습니다. 전에는 상대가 바로 받아쳐서 라운드 시간은 늘 내 차례에 끝났고, 상대의 목숨은 한방 단어로만 뺏을 수 있었습니다. 내 단어는 내자마자 들어가고, 상대가 생각하는 동안 화면은 "상대가 생각하는 중…"을 띄웁니다. 그동안 내 차례 막대는 가득 찬 채로 멈춰 있고 라운드 막대만 줄어듭니다. 상대가 내면 생각한 시간(예: 0.7초)을 안내와 낸 단어 목록에 보여 줍니다.
 
 **같이 하기 (같은 와이파이, 2~4명).** `npm run room` 으로 켜고 출력된 주소를 같은 와이파이의 사람에게 알려 줍니다. "같이 하기" 탭 맨 위에 이름을 쓰고(선택, 비우면 "손님1"처럼 번호. 한 번 쓴 이름은 브라우저에 기억해 판이 끝나 돌아와도 남음), 방을 만들 때 목숨(1~5) · 라운드 시간을 정하고, 방 목록에서 들어갑니다. 나가기를 누르면 경고를 한 번 보여 주고, 판 중에 나가면 목숨을 모두 잃고 빠집니다. 2명 이상이면 방장이 시작합니다. 규칙은 혼자 하기와 같습니다(첫 단어 한방 금지, 첫 선공은 무작위, 목숨을 잃은 사람이 다음 라운드를 먼저, 라운드마다 나온 단어를 비움). 차례는 들어온 순서(화면 목록 위 → 아래)대로 돌고 첫 라운드의 선공만 무작위로 고르며, 이을 단어가 없으면 시간이 다 돼서 목숨을 잃습니다. 목숨이 0 이면 빠지고, 한 사람만 남으면 끝나며 그 사람이 이깁니다. 방 상태는 레디스 `room:<번호>` 에 두고, 화면은 0.5초마다 방 상태를 물어봅니다(그 요청에서 시간 초과도 반영). 사람마다 비밀 토큰을 받아 `X-Room-Token` 머리말로 보냅니다. 끝나면 사람마다 판 기록이 남습니다(난이도 칸에 "같이 하기").
 
@@ -1139,7 +1147,7 @@ sequenceDiagram
 | 4 | `unknown` | 사전에 없음 |
 | 5 | `first-kill` | 라운드의 첫 단어인데 한방 단어 |
 
-그 밖의 거절 코드: `timeout` (시간이 이미 지남), 같이 하기의 `not-your-turn`. 목숨을 잃는 이유: `timeout` · `round-time`(플레이어 차례, 또는 상대가 생각하는 중) · `no-word`(이을 단어 없는 단어를 받음) · `computer-stuck`(상대가 낼 단어 없음), 같이 하기의 `left`. 판이 끝나는 이유에는 `give-up` · `last-one` 이 더 있습니다.
+그 밖의 거절 코드: `timeout` (시간이 이미 지남), `not-your-turn` (혼자 하기는 상대가 생각하는 중, 같이 하기는 내 차례가 아님). 목숨을 잃는 이유: `timeout` · `round-time`(플레이어 차례, 또는 상대가 생각하는 중) · `no-word`(이을 단어 없는 단어를 받음) · `computer-stuck`(상대가 낼 단어 없음), 같이 하기의 `left`. 판이 끝나는 이유에는 `give-up` · `last-one` 이 더 있습니다.
 
 - **등급** `gradeOf(options)`: 0 → `kill`, 1~10 → `attack`, 11~100 → `tricky`, 101~1,000 → `normal`, 그 위 → `easy`
 - **글자 수 점수** `letterPoints(n)`: `n < 10` 이면 `round(300 × (n / 10)²)`, 아니면 `300 + (n − 10) × 60`
@@ -1194,7 +1202,7 @@ filled 의 마지막 하나를 뺀 각 묶음에 대해: random() < p 이면 그
 |---|---|---|
 | `useEffect` | `[]` | Enter 키로 버튼 누르기 (미니 리액트는 click 만 위임) |
 | `useEffect` | `[]` | `sessionStorage` 의 로그인 토큰이 아직 살아 있는지 서버에 물어봄 |
-| `useEffect` | `[gameId, playing, deadline, waiting]` | 0.1초 시계. 시간이 다 되면 서버에 판 상태를 물어봄 (판정은 레디스 TTL). 단어를 보내고 답을 기다리는 동안(`waiting`)은 묻지 않음 |
+| `useEffect` | `[gameId, playing, deadline, waiting, theirTurn]` | 0.1초 시계. 차례 키가 사라질 때 서버에 판 상태를 물어봄 (판정은 레디스 TTL): 내 차례면 시간 초과, 상대 차례면 상대의 단어를 받음. 단어를 보내고 답을 기다리는 동안(`waiting`)은 묻지 않음 |
 | `useEffect` | `[tab]` | 기록 탭을 열 때 순위와 저장소 상태를 불러옴 |
 | `useMemo` | `[history]` | 나온 단어를 큰 박스 · 단어 줄 모양으로 변환 (시계가 갈 때마다 다시 만들지 않음) |
 | `useEffect` | `[]` | 이 탭(`sessionStorage`)에 기억한 방이 있으면 다시 들어감 → 새로고침해도 자리 유지 |
@@ -1222,7 +1230,7 @@ filled 의 마지막 하나를 뺀 각 묶음에 대해: random() < p 이면 그
 | 단어 등록 | 로그인, 단어 등록 · 끝내기로 등록 · 삭제, 글자로 찾기 (앞 300개만 보임) |
 | 기록 | 순위 10개, 레디스 · DBMS 상태 |
 
-- 혼자 하기 시계: 0.1초마다 화면 시각을 갱신, 마감(`응답을 받은 시각 + remainingMs`) + 0.15초가 지나면 `GET /api/games/:id` (서버가 시간 초과를 반영). 단어를 보낸 뒤 답이 0.15초 넘게 늦으면 "상대가 생각하는 중…"
+- 혼자 하기 시계: 0.1초마다 화면 시각을 갱신, 마감(`응답을 받은 시각 + remainingMs`) + 0.15초가 지나면 `GET /api/games/:id` (서버가 시간 초과를 반영). 상대 차례(`turn` 이 `'computer'`)면 여유 없이 마감에 바로 물어 상대의 단어를 받고, 그동안 "상대가 생각하는 중…", 차례 막대는 가득 찬 채로 멈춤, 단어를 보내지 않음
 - 차례 막대 = `turnRemainingMs − (remainingMs − 지금 남은 시간)`, 라운드 막대 = `roundRemainingMs − (remainingMs − 지금 남은 시간)`
 - 같이 하기: 방 상태 요청이 404 면 방 목록으로 돌아감
 - Enter 키: 입력 칸의 `data-enter` 가 가리키는 버튼 id 를 누른 것으로
@@ -1245,7 +1253,7 @@ filled 의 마지막 하나를 뺀 각 묶음에 대해: random() < p 이면 그
 | 메서드 · 주소 | 하는 일 |
 |---|---|
 | `POST /api/games` | 판 시작 `{ player, level, round, lives }` (라운드 시간 초, 목숨 1~5) |
-| `GET /api/games/:id` | 판 상태 (시간 초과면 여기서 목숨 -1 반영) |
+| `GET /api/games/:id` | 판 상태 (차례 키가 사라졌으면 여기서 반영: 내 차례면 목숨 -1, 상대 차례면 상대가 단어를 냄) |
 | `POST /api/games/:id/words` | 단어 내기 `{ word }` |
 | `POST /api/games/:id/giveup` | 포기 |
 | `GET /api/words?first=기차` | 그 글자들로 시작하는 등록 단어 |
@@ -1269,7 +1277,7 @@ filled 의 마지막 하나를 뺀 각 묶음에 대해: random() < p 이면 그
 |---|---|---|
 | `POST /api/games` | `{ player, level, round, lives }` | `{ game, trace }` |
 | `GET /api/games/:id` | | `{ game, trace }` |
-| `POST /api/games/:id/words` | `{ word }` | `{ accepted, reject, computer: { word, finisher, thinkMs } \| null, game, trace }` |
+| `POST /api/games/:id/words` | `{ word }` | `{ accepted, reject, computer, game, trace }` (`computer` 는 보통 `null`. 상대의 단어는 생각 시간 뒤 `GET` 에서) |
 | `POST /api/games/:id/giveup` | | `{ game, trace }` |
 | `GET /api/words?first=기차` | | `{ first, words: [{ word, finisher }], trace }` |
 | `POST /api/words` | `{ word, finisher }` + Bearer | `{ added, word, finisher, id?, invalidated?, message }` |

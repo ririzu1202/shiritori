@@ -2,7 +2,7 @@
  * style.css — 끝말잇기 화면
  *
  *   가운데 큰 박스에 마지막으로 나온 단어를 크게 보여 주고, 이어야 할 끝 글자에 형광펜을 칠한다.
- *   색: 남색 = 내 단어, 청록 = 상대 단어, 붉은색 = 끝내기 단어, 회색 = 시작 단어
+ *   색: 남색 = 내 단어, 청록 = 상대 단어, 붉은색 = 끝내기 단어, 보라 = 시작 단어
  * ====================================================================== */
 
 :root {
@@ -11,6 +11,7 @@
   --grid: #c4372c;         /* 붉은색: 끝내기 단어, 경고 */
   --marker: #ffd23f;       /* 형광펜 */
   --teal: #0e7c6b;         /* 상대 글씨 */
+  --start: #6b4fbb;        /* 시작 단어 (보라: 나 · 상대와 겹치지 않는 색) */
   --muted: #5e687c;
   --line: #d6d9cf;
   --hand: 'Gowun Batang', 'Batang', '바탕', serif;
@@ -80,7 +81,8 @@ h3 { margin: 22px 0 8px; font: 600 15px var(--ui); color: var(--muted); }
 .big.long { font-size: 34px; }
 .stage.computer .big { color: var(--teal); }
 .stage.computer.finisher .big { color: var(--grid); }
-.stage.start .big { color: var(--muted); }
+.stage.start { border-color: var(--start); }
+.stage.start .who, .stage.start .big { color: var(--start); }
 .tail.on { padding: 0 0.08em; background: var(--marker); color: var(--ink); }       /* 이어야 할 끝 글자 */
 .hint { min-height: 1.6em; margin: 0; font-size: 16px; }
 .stage.empty .hint { color: var(--muted); }
@@ -100,6 +102,10 @@ h3 { margin: 22px 0 8px; font: 600 15px var(--ui); color: var(--muted); }
 .played li.life { color: var(--muted); }
 .played li.life .w { font: 500 14px var(--ui); color: var(--grid); }
 .played li.life.computer .w { color: var(--teal); }
+
+/* 시작 단어 줄: 보라 글씨 + 옅은 보라 바탕 (라운드가 새로 시작된 곳). 단어 색은 등급 색 대신 보라 */
+.played li.start-word { background: #f3effb; }
+.played li.start-word .by, .played li.start-word .w { color: var(--start); }
 
 /* 등급 색: 이을 수 있는 단어가 적을수록 붉다 */
 .grade.kill, .grade.kill .w { color: var(--grid); }

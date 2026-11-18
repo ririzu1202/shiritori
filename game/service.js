@@ -7,14 +7,15 @@
  *                                                 ranking                 기록 상위 10개 캐시           5초
  *                                                 game:<번호>             진행 중인 판의 상태 (목숨, 점수, 낸 단어)  30분
  *                                                 game:<번호>:used:<단어>  이번 라운드에 나온 단어       30분 (새 라운드에 지움)
- *                                                 game:<번호>:turn        플레이어 차례. 사라지면 시간 초과  10초
+ *                                                 game:<번호>:turn        지금 차례. 플레이어 차례면 사라질 때 시간 초과(10초), 상대 차례면 생각이 끝남(0.1~1초)
  *                                                 game:<번호>:lock        한 판을 한 번에 한 요청만 다루게 하는 잠금 (nx)
  *                                                 game:seq / stats:games  판 번호 / 끝난 판 수 (incr)
  *
  *   단어 확인   : 캐시(word:…)에 있으면 그대로, 없으면 DBMS 를 선형 탐색하고 결과를 캐시에 넣는다
  *   단어 등록   : DBMS 에 INSERT 한 뒤 word:<단어> 와 first:<첫 글자> 캐시를 지운다 (무효화)
- *   상대의 생각 : 남은 라운드 시간에 따라 0.1~1초 기다린 뒤 수를 둔다 (rules.js thinkTime). 그 시간도 라운드 시간에서 빠지고,
- *                 생각하는 동안 라운드 시간이 다 되면 상대가 목숨을 잃는다
+ *   상대의 생각 : 내 단어는 바로 받아들이고, 상대 차례를 연다. 남은 라운드 시간에 따라 생각할 시간(0.1~1초, rules.js thinkTime)을
+ *                 차례 키(game:<번호>:turn)의 TTL 로 걸고, 키가 사라진 뒤 처음 오는 요청에서 상대가 둔다 (시간 초과와 같은 방식).
+ *                 생각한 시간도 라운드 시간에서 빠지고, 생각하는 동안 라운드 시간이 다 되면 상대가 목숨을 잃는다
  *   상대의 선택 : 후보마다 등급을 매겨 센 등급부터 확률을 굴린다 (rules.js pickWord). 등급은 메모리의 등급 표(글자 → 단어 수)로 매긴다.
  *                 등급 표는 사전을 처음 한 번 id 범위로 나눠 끝까지 읽어 세고, 그 뒤로는 등록 · 삭제할 때 숫자만 고친다
  *   단어 삭제   : 미니 DBMS 에는 DELETE 가 없다. 그래서 같은 단어를 removed = 1 로 한 줄 더 INSERT 한다 ("지웠다"는 기록).
@@ -62,11 +63,10 @@ const START_TRIES = 30;              // 시작 단어를 뽑아 보는 횟수
  * secondMs  : 라운드 시간 1초의 길이 (테스트에서 줄여 쓴다)
  * coin      : 판의 첫 라운드에 누가 먼저 낼지 정하는 난수 (0.5 미만이면 플레이어)
  * wordFiles : { words, finishers, removed } 화면에서 등록·삭제한 단어를 이어 적을 파일 (없으면 적지 않는다)
- * think     : 남은 라운드 시간(ms) → 상대가 생각할 시간(ms). 기본은 rules.js thinkTime 을 secondMs 에 맞춰 늘이고 줄인 것
- * sleep     : ms 만큼 기다리는 함수 (테스트에서 기다리지 않고 기록만 하게 바꾼다)
+ * think     : 남은 라운드 시간(ms) → 상대가 생각할 시간(ms). 기본은 rules.js thinkTime 을 secondMs 에 맞춰 늘이고 줄인 것. 0 이면 기다리지 않고 바로 둔다
  */
 export function createGameService({ redis, db, turnMs = 10_000, random = Math.random, wordFiles = null, randomStart = true, lives = LIVES, secondMs = 1000, coin = random,
-  think = (roundLeftMs) => thinkTime(roundLeftMs * 1000 / secondMs, random) * secondMs / 1000, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }) {
+  think = (roundLeftMs) => thinkTime(roundLeftMs * 1000 / secondMs, random) * secondMs / 1000 }) {
   const wordCache = createCache(redis, { ttl: 60_000 });
   const rankCache = createCache(redis, { ttl: 5_000 });
   let registering = Promise.resolve();     // 단어 등록을 한 줄로 세운다 ("있는지 확인 → INSERT" 사이에 다른 등록이 끼어들지 않게)
@@ -234,7 +234,8 @@ export function createGameService({ redis, db, turnMs = 10_000, random = Math.ra
     // remainingMs      : 실제로 시간 초과가 되는 때까지 (차례 키의 남은 시간 = min(차례, 라운드))
     // turnRemainingMs  : 화면의 차례 막대. 차례마다 10초로 다시 차고, 라운드 시간과 따로 줄어든다
     // roundRemainingMs : 화면의 라운드 막대
-    const turnRemainingMs = playing ? Math.max(0, turnMs - used) : 0;
+    // 상대가 생각하는 동안은 내 차례 막대를 가득 찬 채로 둔다 (내 시간은 상대가 둔 뒤부터 흐른다)
+    const turnRemainingMs = !playing ? 0 : state.turn === 'computer' ? turnMs : Math.max(0, turnMs - used);
     const roundRemainingMs = playing && state.roundLeftMs !== undefined ? Math.max(0, state.roundLeftMs - used) : 0;
     return { ...state, remainingMs, turnRemainingMs, roundRemainingMs, turnMs };
   }
@@ -311,18 +312,59 @@ export function createGameService({ redis, db, turnMs = 10_000, random = Math.ra
   }
 
   /**
-   * 상대가 생각한다: 남은 라운드 시간에 따라 기다리고(넉넉하면 0.5~1초, 거의 없으면 0.1~0.2초), 그만큼 라운드 시간을 줄인다.
-   * 생각을 마치기 전에 라운드 시간이 다 되면 거기서 멈추고 inTime: false (상대가 'round-time' 으로 목숨을 잃는다)
+   * 상대 차례를 연다: 남은 라운드 시간에 따라 생각할 시간을 정하고(rules.js thinkTime: 넉넉하면 0.5~1초, 거의 없으면 0.1~0.2초)
+   * 그 시간을 차례 키의 TTL 로 건다. 키가 사라진 뒤 처음 오는 요청(get · play)에서 상대가 둔다 (computerReply).
+   * 그래서 내 단어는 이 요청에서 바로 들어가고, 상대의 단어는 생각 시간이 지난 뒤에 나온다.
+   * 생각을 마치기 전에 라운드 시간이 끝나면(thinkLate) 키는 라운드가 끝나는 때 사라지고, 상대가 'round-time' 으로 목숨을 잃는다.
+   * 생각 시간이 0 이면 기다리지 않고 바로 둔다 → 둔 단어를 돌려준다. 기다릴 때는 null
    */
-  async function thinkFirst(state, trace) {
+  async function computerTurn(state, trace) {
     const left = state.roundLeftMs ?? Infinity;
     const wanted = Math.max(0, Math.round(think(left)));
-    const spent = Math.min(wanted, left);
-    if (spent > 0) await sleep(spent);
+    state.turn = 'computer';
+    state.thinkLate = wanted >= left;
+    state.thinkMs = Math.min(wanted, left);
+    state.turnLimitMs = Math.max(1, state.thinkMs);
+    if (wanted === 0) return computerReply(state, trace);
+    trace.push({ label: '상대 차례: 생각할 시간 ' + (state.thinkMs / 1000).toFixed(1) + '초를 차례 키의 TTL 로 걸었습니다', key: turnKey(state.id), source: 'redis', plan: null, ms: 0 });
+    await redis.set(gameKey(state.id), state, { ttl: GAME_TTL });
+    await openTurn(state);                                         // 상대 차례: 이 키가 사라지면 상대가 둔다
+    return null;
+  }
+
+  /**
+   * 상대가 생각을 마치고 둔다 (상대 차례의 차례 키가 사라졌을 때, 또는 생각 시간이 0 일 때).
+   * 생각한 시간만큼 라운드 시간을 줄이고, 생각하는 동안 라운드 시간이 끝났으면 상대가 목숨을 잃는다.
+   * 이을 단어가 없으면 상대가, 상대의 단어에 이을 단어가 없으면 플레이어가 목숨을 잃는다. 아니면 플레이어 차례를 연다.
+   * 둔 단어 { word, finisher, thinkMs } 를 돌려준다 (못 두었으면 null)
+   */
+  async function computerReply(state, trace) {
+    const spent = state.thinkMs ?? 0;
     if (state.roundLeftMs !== undefined) state.roundLeftMs = Math.max(0, state.roundLeftMs - spent);
-    const inTime = wanted < left;
-    trace.push({ label: inTime ? '상대가 생각한 시간 (남은 라운드 시간에 따라 0.1~1초)' : '상대가 생각하는 동안 라운드 시간이 다 됨', key: 'game:' + state.id, source: 'think', plan: null, ms: spent });
-    return { ms: spent, inTime };
+    state.turn = 'player';
+    trace.push({ label: state.thinkLate ? '상대가 생각하는 동안 라운드 시간이 다 됨' : '상대가 생각한 시간 (남은 라운드 시간에 따라 0.1~1초)', key: turnKey(state.id), source: 'think', plan: null, ms: spent });
+    if (state.thinkLate) { await loseLife(state, 'computer', 'round-time', trace); return null; }
+
+    const usedWords = await usedWordsOf(state.id);
+    const last = [...state.history].reverse().find((h) => h.word);       // 상대가 이어야 할 단어 (내 단어 또는 시작 단어)
+    let reply = null, theirs = null;
+    if (state.need && last) {
+      const move = await computerMove(state, usedWords, (await continuations(last.word, usedWords, trace)).open, trace, spent);
+      if (move) ({ reply, theirs } = move);
+    } else {                                                             // 시작 단어 없이 상대가 먼저: 시작 단어를 뽑는 방법으로 고른다
+      const opening = await pickStartWord(trace, usedWords);
+      if (opening) {
+        reply = { word: opening.word, finisher: (await lookup(opening.word, trace)).finisher, thinkMs: spent };
+        theirs = await recordComputer(state, usedWords, reply, trace, spent);
+      }
+    }
+    if (!reply) { await loseLife(state, 'computer', 'computer-stuck', trace); return null; }
+    if (theirs.open.length === 0) { await loseLife(state, 'player', 'no-word', trace); return reply; }
+
+    turnLimit(state);
+    await redis.set(gameKey(state.id), state, { ttl: GAME_TTL });
+    await openTurn(state);                                         // 플레이어 차례 시작: 이 키가 사라지면 시간 초과
+    return reply;
   }
 
   /**
@@ -357,14 +399,13 @@ export function createGameService({ redis, db, turnMs = 10_000, random = Math.ra
   /**
    * 새 라운드를 연다 (판을 열 때, 그리고 누군가 목숨을 잃은 뒤).
    *   starter : 먼저 내는 쪽. 판의 첫 라운드는 무작위, 그 뒤로는 목숨을 잃은 쪽
-   * 시작 단어를 놓고(randomStart), 상대가 먼저면 상대가 바로 첫 수를 둔 뒤 플레이어 차례를 연다.
+   * 시작 단어를 놓고(randomStart), 상대가 먼저면 상대 차례를 연다 (생각한 뒤 첫 수를 둔다). 아니면 플레이어 차례를 연다.
    * 시작 단어가 없을 때 상대의 첫 수는 시작 단어를 뽑는 방법(pickStartWord: 2~3글자, 이을 단어가 있음)으로 고른다.
-   * 상대가 첫 수를 못 두면 상대가, 상대의 첫 수에 이을 단어가 없으면 플레이어가 목숨을 잃는다.
-   * 상대의 첫 수도 생각한 뒤에 둔다 (새 라운드라 라운드 시간이 가득 → 0.5~1초)
+   * 상대가 첫 수를 못 두면 상대가, 상대의 첫 수에 이을 단어가 없으면 플레이어가 목숨을 잃는다 (computerReply).
+   * 새 라운드라 라운드 시간이 가득 → 상대는 0.5~1초 생각한다
    */
   async function openRound(state, used, trace, starter = 'player') {
     const first = randomStart ? await pickStartWord(trace, used) : null;
-    const usedWords = new Set(used);
     state.need = null;
     state.roundLeftMs = state.roundMs;                                     // 새 라운드: 라운드 시간을 다시 채운다
     state.firstMove = true;                                                // 이번 라운드의 첫 수: 한방 단어 금지
@@ -372,23 +413,10 @@ export function createGameService({ redis, db, turnMs = 10_000, random = Math.ra
     if (first) {
       state.history.push(entry('start', first.word, first.total));
       state.need = nextStartChars(first.word);
-      usedWords.add(first.word);
       await redis.set(usedPrefix(state.id) + first.word, 1, { ttl: GAME_TTL });      // 시작 단어도 이번 라운드에 나온 단어다
     }
-    if (starter === 'computer') {
-      const thought = await thinkFirst(state, trace);
-      if (!thought.inTime) return loseLife(state, 'computer', 'round-time', trace);
-      let theirs = null;
-      if (first) {
-        const move = await computerMove(state, usedWords, (await continuations(first.word, usedWords, trace)).open, trace, thought.ms);
-        theirs = move && move.theirs;
-      } else {
-        const opening = await pickStartWord(trace, usedWords);
-        if (opening) theirs = await recordComputer(state, usedWords, { word: opening.word, finisher: (await lookup(opening.word, trace)).finisher }, trace, thought.ms);
-      }
-      if (!theirs) return loseLife(state, 'computer', 'computer-stuck', trace);
-      if (theirs.open.length === 0) return loseLife(state, 'player', 'no-word', trace);
-    }
+    if (starter === 'computer') { await computerTurn(state, trace); return; }
+    state.turn = 'player';
     turnLimit(state);
     await redis.set(gameKey(state.id), state, { ttl: GAME_TTL });
     await openTurn(state);                                         // 플레이어 차례 시작: 이 키가 사라지면 시간 초과
@@ -427,7 +455,7 @@ export function createGameService({ redis, db, turnMs = 10_000, random = Math.ra
     return { game: await view(state), trace };
   }
 
-  /** 플레이어가 단어를 낸다 → 상대가 받아친다 */
+  /** 플레이어가 단어를 낸다 → 받아들이면 상대 차례를 연다 (상대의 단어는 생각 시간이 지난 뒤 나온다) */
   function play(id, raw) {
     return withLock(id, async () => {
       const trace = [];
@@ -435,6 +463,13 @@ export function createGameService({ redis, db, turnMs = 10_000, random = Math.ra
       const state = await load(id);
       if (state.status !== 'playing') throw new GameError(409, '이미 끝난 판입니다');
       const done = async (extra) => ({ accepted: false, reject: null, computer: null, ...extra, game: await view(state), trace });
+
+      // 상대가 생각하는 중이면 단어를 받지 않는다. 생각 시간이 이미 지났으면 상대의 수를 먼저 반영한다
+      if (state.turn === 'computer') {
+        const over = (await redis.ttl(turnKey(id))) === -2;
+        const reply = over ? await computerReply(state, trace) : null;
+        return done({ computer: reply, reject: { code: 'not-your-turn', message: over ? '상대가 방금 단어를 냈습니다. 그 단어에 이어서 내세요' : '상대가 생각하는 중입니다' } });
+      }
 
       // 차례 키가 만료돼 사라졌으면 시간 초과다: 목숨을 잃고, 지금 낸 단어는 받지 않는다
       const remaining = await redis.ttl(turnKey(id));
@@ -465,32 +500,26 @@ export function createGameService({ redis, db, turnMs = 10_000, random = Math.ra
       state.score.player += played.points;
       state.turns++;
       state.firstMove = false;
+      state.need = nextStartChars(word);                       // 상대가 이어야 할 글자
 
-      // 상대가 생각한 뒤 받아친다. 생각하는 동안 라운드 시간이 다 되거나 이을 단어가 없으면 상대가 목숨을 잃는다
-      const thought = await thinkFirst(state, trace);
-      if (!thought.inTime) { await loseLife(state, 'computer', 'round-time', trace); return done({ accepted: true }); }
-      const move = await computerMove(state, usedWords, mine.open, trace, thought.ms);
-      if (!move) { await loseLife(state, 'computer', 'computer-stuck', trace); return done({ accepted: true }); }
-      const reply = move.reply;
-
-      // 플레이어가 이을 수 있는 단어가 하나도 없으면 플레이어가 목숨을 잃는다
-      if (move.theirs.open.length === 0) { await loseLife(state, 'player', 'no-word', trace); return done({ accepted: true, computer: reply }); }
-
-      turnLimit(state);
-      await redis.set(gameKey(id), state, { ttl: GAME_TTL });
-      await openTurn(state);                                   // 플레이어 차례 시작: 이 키가 사라지면 시간 초과
+      // 상대 차례: 생각할 시간을 차례 키에 걸고 바로 답한다. 상대의 단어는 그 키가 사라진 뒤 판 상태를 물을 때 나온다
+      // (생각 시간이 0 이면 여기서 바로 둔다)
+      const reply = await computerTurn(state, trace);
       return done({ accepted: true, computer: reply });
     });
   }
 
-  /** 판의 현재 상태. 차례 키가 사라져 있으면 시간 초과로 목숨을 잃는다 */
+  /** 판의 현재 상태. 차례 키가 사라져 있으면: 플레이어 차례였으면 시간 초과로 목숨을 잃고, 상대 차례였으면 상대가 생각을 마치고 둔다 */
   async function get(id) {
     const state = await load(id);
     if (state.status !== 'playing' || (await redis.ttl(turnKey(id))) !== -2) return { game: await view(state), trace: [] };
     return withLock(id, async () => {
       const trace = [];
       const fresh = await load(id);
-      if (fresh.status === 'playing' && (await redis.ttl(turnKey(id))) === -2) await loseLife(fresh, 'player', timeoutReason(fresh), trace);
+      if (fresh.status === 'playing' && (await redis.ttl(turnKey(id))) === -2) {
+        if (fresh.turn === 'computer') await computerReply(fresh, trace);
+        else await loseLife(fresh, 'player', timeoutReason(fresh), trace);
+      }
       return { game: await view(fresh), trace };
     });
   }
