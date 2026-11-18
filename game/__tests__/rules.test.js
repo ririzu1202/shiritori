@@ -1,7 +1,7 @@
 /* rules.js 단위 테스트: 두음법칙, 단어 판정, 상대의 단어 선택 */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { WORD_PATTERN, LEVELS, ROUND_TIMES, DEFAULT_ROUND, FINISHER_CHANCE, dueum, nextStartChars, rejectReason, pickWord, gradeOf, letterPoints } from '../rules.js';
+import { WORD_PATTERN, LEVELS, ROUND_TIMES, DEFAULT_ROUND, FINISHER_CHANCE, dueum, nextStartChars, rejectReason, pickWord, gradeOf, letterPoints, thinkTime, THINK } from '../rules.js';
 
 test('단어 형식: 한글 음절 2글자 이상만', () => {
   for (const ok of ['기차', '끝말잇기', '뷁뷁']) assert.equal(WORD_PATTERN.test(ok), true, ok);
@@ -186,4 +186,16 @@ test('등급: 이을 수 있는 단어 수로 다섯 등급을 나눈다', () =>
 test('글자 수 점수: 9글자까지는 10글자(300)에 대한 비율의 제곱, 10글자는 300점, 그 뒤로 한 글자마다 60점이 더해진다', () => {
   const cases = [[2, 12], [3, 27], [4, 48], [5, 75], [9, 243], [10, 300], [11, 360], [12, 420], [20, 900]];
   for (const [length, points] of cases) assert.equal(letterPoints(length), points, String(length));
+});
+
+test('thinkTime: 남은 라운드 시간이 넉넉하면 0.5~1초, 0 에 가까울수록 0.1~0.2초 (그 사이는 비례)', () => {
+  assert.deepEqual(THINK, { slow: [500, 1000], fast: [100, 200], easeMs: 10_000 });
+  const range = (left) => [thinkTime(left, () => 0), thinkTime(left, () => 1)];
+  assert.deepEqual(range(150_000), [500, 1000]);
+  assert.deepEqual(range(10_000), [500, 1000]);
+  assert.deepEqual(range(5_000), [300, 600]);
+  assert.deepEqual(range(1_000), [140, 280]);
+  assert.deepEqual(range(0), [100, 200]);
+  assert.deepEqual(range(-5), [100, 200]);
+  assert.equal(thinkTime(10_000, () => 0.5), 750);
 });

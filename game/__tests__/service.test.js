@@ -153,7 +153,7 @@ test('판: 상대가 이을 단어가 없으면 플레이어가 이긴다', asyn
 test('판: 어려움 난이도는 끝내기 단어를 낸다', async () => {
   const { game } = await service.start({ player: '어려움', level: 'hard' });
   const turn = await service.play(game.id, '기차');
-  assert.deepEqual(turn.computer, { word: '차륜', finisher: true });
+  assert.deepEqual(turn.computer, { word: '차륜', finisher: true, thinkMs: 0 });                // 테스트는 생각 시간 0
   assert.deepEqual([turn.game.result, turn.game.reason], ['lose', 'no-word']);
 });
 
@@ -219,6 +219,50 @@ test('라운드 시간: 단어를 낼 때마다 그 차례에 쓴 시간만큼 �
     assert.ok(lost.game.roundRemainingMs > 900);                                           // 새 라운드: 다시 채워짐
     await quick.service.giveUp(game.id);
   } finally { await quick.stop(); }
+});
+
+test('생각 시간: 상대는 생각한 뒤 받아치고, 그 시간만큼 라운드 시간이 준다', async () => {
+  const waited = [], lefts = [];
+  const slow = await startGameStack({ words: WORDS, think: (left) => { lefts.push(left); return 700; }, sleep: async (ms) => { waited.push(ms); } });
+  try {
+    const { game } = await slow.service.start({ player: '생각', level: 'easy', round: 60 });
+    const turn = await slow.service.play(game.id, '기차');                                 // 상대: 차표
+    assert.deepEqual(waited, [700]);                                                         // 실제로 기다린 시간
+    assert.ok(lefts[0] <= 60_000 && lefts[0] > 59_000, String(lefts[0]));                   // 생각 시간은 그때 남은 라운드 시간으로 정한다
+    assert.equal(turn.computer.thinkMs, 700);
+    assert.equal(turn.game.history.at(-1).thinkMs, 700);
+    assert.ok(turn.game.roundRemainingMs <= 60_000 - 700 && turn.game.roundRemainingMs > 58_000, String(turn.game.roundRemainingMs));
+    assert.equal(turn.trace.find((t) => t.source === 'think').ms, 700);
+    await slow.service.giveUp(game.id);
+  } finally { await slow.stop(); }
+});
+
+test('생각 시간: 상대가 생각하는 동안 라운드 시간이 다 되면 상대가 목숨을 잃는다 (round-time)', async () => {
+  const waited = [];
+  const slow = await startGameStack({ words: WORDS, think: () => Infinity, sleep: async (ms) => { waited.push(ms); } });
+  try {
+    const { game } = await slow.service.start({ player: '시간', level: 'easy', round: 10 });
+    const turn = await slow.service.play(game.id, '기차');
+    assert.equal(turn.accepted, true);
+    assert.equal(turn.computer, null);                                                       // 다 생각하지 못해 단어를 내지 못했다
+    assert.ok(waited[0] > 9_000 && waited[0] <= 10_000, String(waited[0]));                  // 남은 라운드 시간까지만 기다린다
+    assert.deepEqual([turn.game.status, turn.game.result, turn.game.reason], ['over', 'win', 'round-time']);
+    assert.equal(turn.game.history.at(-1).who, 'computer');
+  } finally { await slow.stop(); }
+});
+
+test('생각 시간: 상대가 라운드를 먼저 낼 때도 생각한 뒤 낸다', async () => {
+  const waited = [];
+  const slow = await startGameStack({ words: WORDS, coin: () => 0.9, randomStart: true, think: () => 400, sleep: async (ms) => { waited.push(ms); } });
+  try {
+    const { game } = await slow.service.start({ player: '선공', level: 'easy', round: 30 });
+    const opening = game.history.find((h) => h.by === 'computer');
+    assert.ok(opening, JSON.stringify(game.history));
+    assert.equal(opening.thinkMs, 400);
+    assert.deepEqual(waited, [400]);
+    assert.ok(game.roundRemainingMs <= 30_000 - 400, String(game.roundRemainingMs));
+    await slow.service.giveUp(game.id);
+  } finally { await slow.stop(); }
 });
 
 test('판: 끝난 판에는 단어를 낼 수 없고, 없는 판은 404', async () => {
@@ -466,7 +510,7 @@ test('등급: 낸 단어마다 이을 수 있는 단어 수와 등급이 기록�
     const first = await other.service.play(game.id, '기차');
     assert.deepEqual(first.game.history, [
       { by: 'player', word: '기차', options: 3, grade: 'attack', points: 1012 },          // 공격 1000 + 2글자 12
-      { by: 'computer', word: '차표', options: 1, grade: 'attack', points: 1012, finisher: false },
+      { by: 'computer', word: '차표', options: 1, grade: 'attack', points: 1012, finisher: false, thinkMs: 0 },
     ]);
     const second = await other.service.play(game.id, '표범');
     assert.deepEqual(second.game.history[2], { by: 'player', word: '표범', options: 0, grade: 'kill', points: 2012 });

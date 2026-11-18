@@ -12,6 +12,7 @@
  *     myName    마지막으로 쓴 내 이름. 판이 끝나 목록으로 돌아와도 이름 칸에 다시 채운다 (localStorage 에도 기억)
  *     game      서버가 준 판의 상태 (없으면 null)
  *     deadline  이번 차례가 끝나는 시각 (ms)
+ *     waiting   단어를 보내고 답을 기다리는 중 (상대가 생각하는 0.1~1초 포함). 이동안에는 시계가 서버에 묻지 않는다
  *     now       현재 시각. 0.1초마다 바뀌어 남은 시간 표시를 다시 그리게 한다
  *     notice    판 아래에 보여 줄 안내 { kind, text, word? }
  *     trace     방금 요청에서 값을 어디서 가져왔는지 (서버 응답의 trace)
@@ -20,7 +21,7 @@
  *     rank / status      기록 화면의 순위 / 두 저장소 상태
  *
  *   useEffect  ① []                    Enter 키로 버튼 누르기 (미니 리액트는 click 만 위임하므로 여기서 연결한다)
- *              ② [판 번호, 진행 여부, deadline]  0.1초 타이머. 시간이 다 되면 서버에 판 상태를 물어 시간 초과를 반영한다
+ *              ② [판 번호, 진행 여부, deadline, waiting]  0.1초 타이머. 시간이 다 되면 서버에 판 상태를 물어 시간 초과를 반영한다
  *              ③ [tab]                 기록 화면을 열 때 순위와 상태를 불러온다
  *   useMemo    [game.history]          나온 단어들을 큰 박스와 단어 줄에 그릴 모양으로 바꾼다 (시계가 갈 때마다 다시 만들지 않는다)
  *
@@ -61,13 +62,14 @@ const levelOf = (level) => LEVELS.find((l) => l[0] === level) || LEVELS[2];
 const levelName = (level) => levelOf(level)[1];
 const $ = (id) => document.getElementById(id);
 const ms = (n) => (n < 10 ? n.toFixed(1) : Math.round(n)) + ' ms';
+const seconds = (n) => (n / 1000).toFixed(1) + '초';
 
 /** 판이 끝난 이유를 문장으로 */
 function endingText(game) {
   if (game.reason === 'computer-stuck') return '상대의 목숨이 모두 사라졌습니다';
   if (game.reason === 'no-word') return '이을 수 있는 단어가 없어 마지막 목숨을 잃었습니다';
   if (game.reason === 'timeout') return '제한 시간 안에 단어를 내지 못해 마지막 목숨을 잃었습니다';
-  if (game.reason === 'round-time') return '라운드 시간이 다 되어 마지막 목숨을 잃었습니다';
+  if (game.reason === 'round-time') return game.result === 'win' ? '상대가 생각하는 동안 라운드 시간이 다 되어 상대의 목숨이 모두 사라졌습니다' : '라운드 시간이 다 되어 마지막 목숨을 잃었습니다';
   return '판을 포기했습니다';
 }
 
@@ -88,6 +90,7 @@ function lifeNotice(game) {
   const lost = list[at], before = list[at - 1];
   const next = roundText(game, at + 1);
   if (lost.who === 'computer' && lost.reason === 'computer-stuck' && list[at - 1] && list[at - 1].by === 'life') return { kind: 'ok', text: '상대가 첫 수로 낼 단어가 없어 목숨을 잃었습니다 (상대 목숨 ' + lost.left + '개).' + next };
+  if (lost.who === 'computer' && lost.reason === 'round-time') return { kind: 'ok', text: '상대가 생각하는 동안 라운드 시간이 다 되어 상대가 목숨을 잃었습니다 (상대 목숨 ' + lost.left + '개).' + next };
   if (lost.who === 'computer') return { kind: 'ok', text: '상대가 이을 단어를 몰라 목숨을 잃었습니다 (상대 목숨 ' + lost.left + '개).' + next };
   if (lost.reason === 'round-time') return { kind: 'bad', text: '라운드 시간이 다 되어 목숨을 잃었습니다 (내 목숨 ' + lost.left + '개).' + next };
   if (lost.reason === 'timeout') return { kind: 'bad', text: '시간이 지나 목숨을 잃었습니다 (내 목숨 ' + lost.left + '개).' + next };
@@ -97,7 +100,7 @@ function lifeNotice(game) {
 /**
  * 나온 단어들 → 화면에 그릴 모양
  *   stage : 가운데 큰 박스에 보여 줄 마지막 단어 { by, finisher, head: 끝 글자를 뺀 앞부분, tail: 끝 글자, size }
- *   log   : 낸 순서대로의 목록. 단어 줄 { by, word, grade, options, points } 과 목숨을 잃은 줄 { by: 'life', who, reason, left }
+ *   log   : 낸 순서대로의 목록. 단어 줄 { by, word, grade, options, points, thinkMs(상대가 생각한 ms) } 과 목숨을 잃은 줄 { by: 'life', who, reason, left }
  */
 function toBoard(history) {
   const last = history.filter((entry) => entry.by !== 'life').pop();
@@ -113,7 +116,7 @@ function toBoard(history) {
     stage,
     log: history.map((entry) => (entry.by === 'life'
       ? { by: 'life', who: entry.who, reason: entry.reason, left: entry.left }
-      : { by: entry.by, word: entry.word, grade: entry.grade || 'normal', options: entry.options, points: entry.points || 0 })),
+      : { by: entry.by, word: entry.word, grade: entry.grade || 'normal', options: entry.options, points: entry.points || 0, thinkMs: entry.thinkMs || 0 })),
   };
 }
 
@@ -177,7 +180,7 @@ function Log({ log }) {
           h('span', { class: 'by ' + entry.by }, WHO[entry.by]),
           h('span', { class: 'w' }, entry.word + ' ' + gradeInfo(entry.grade)[1]),
           h('span', { class: 'n' }, gradeInfo(entry.grade)[0] + (entry.options === undefined ? '' : ', 이을 단어 ' + entry.options.toLocaleString('ko-KR') + '개') +
-            (entry.points ? ', +' + entry.points.toLocaleString('ko-KR') + '점' : '')))))));
+            (entry.points ? ', +' + entry.points.toLocaleString('ko-KR') + '점' : '') + (entry.thinkMs ? ', 생각 ' + seconds(entry.thinkMs) : '')))))));
 }
 
 /** 남은 시간 막대. kind: '' 한 차례 · 'round' 라운드 */
@@ -215,13 +218,14 @@ function StartRow({ playing, level, round, lives, over, myName, onLevel, onRound
     h('div', { class: 'rounds' }, h('span', { class: 'name' }, '목숨'), LIFE_COUNTS.map((n) =>
       h('button', { class: lives === n ? 'chip on' : 'chip', type: 'button', onClick: () => onLives(n) }, n + '개'))),
     h('p', { class: 'small' }, levelName(level), ': 상대가 ', levelOf(level)[2]),
-    h('p', { class: 'small' }, '라운드 ' + round + '초: 내 차례에 쓴 시간만큼 줄고, 다 되면 그때 차례인 내가 목숨을 잃습니다. 누군가 목숨을 잃으면 라운드가 끝나고, 시간과 나온 단어가 다시 채워집니다'),
+    h('p', { class: 'small' }, '라운드 ' + round + '초: 내 차례에 쓴 시간과 상대가 생각한 시간만큼 줄고, 다 되면 그때 차례인 쪽이 목숨을 잃습니다. 상대는 남은 라운드 시간이 넉넉하면 0.5~1초, 거의 없으면 0.1~0.2초 생각합니다. 누군가 목숨을 잃으면 라운드가 끝나고, 시간과 나온 단어가 다시 채워집니다'),
     h('p', { class: 'small' }, '목숨 ' + lives + '개: 어느 한쪽의 목숨이 0 이 되면 판이 끝납니다'));
 }
 
 /** 방금 요청을 처리하면서 값을 어디서 가져왔는지 */
 function Trace({ trace }) {
-  const tag = (t) => t.source === 'cache' ? ['hit', '레디스 캐시']
+  const tag = (t) => t.source === 'think' ? ['think', '상대 생각']
+    : t.source === 'cache' ? ['hit', '레디스 캐시']
     : t.source === 'redis' ? ['redis', '레디스']
     : t.plan === 'FULL_SCAN' ? ['scan', 'DBMS 전체 탐색']
     : t.plan === 'INSERT' ? ['write', 'DBMS 저장']
@@ -440,6 +444,7 @@ function App() {
   const rememberName = (name) => { setMyName(name); try { localStorage.setItem('name', name); } catch (e) { /* 기억 못 해도 그만 */ } };
   const [game, setGame] = useState(null);
   const [deadline, setDeadline] = useState(0);
+  const [waiting, setWaiting] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [notice, setNotice] = useState(null);
   const [trace, setTrace] = useState([]);
@@ -502,12 +507,12 @@ function App() {
     let asking = false;
     const timer = setInterval(() => {
       setNow(Date.now());
-      if (Date.now() < deadline + 150 || asking) return;
+      if (Date.now() < deadline + 150 || asking || waiting) return;          // 단어를 보내 놓았으면 그 답이 판 상태를 알려 준다
       asking = true;
       api.getGame(gameId).then((res) => show(res, lifeNotice(res.game)), fail).finally(() => { asking = false; });
     }, 100);
     return () => clearInterval(timer);
-  }, [gameId, playing, deadline]);
+  }, [gameId, playing, deadline, waiting]);
 
   const loadRank = () => Promise.all([api.ranking(), api.status()])
     .then(([r, s]) => batch(() => { setRank(r); setStatus(s); }), () => {});
@@ -564,9 +569,13 @@ function App() {
   useEffect(() => { if (myTurn) $('room-word').focus(); }, [myTurn]);
 
   async function play(word) {
-    if (!game) return;
+    if (!game || waiting) return;
+    setWaiting(true);
+    // 답이 0.15초 넘게 늦으면 상대가 생각하는 중이다 (단어 확인만 하고 거절하는 답은 보통 그 전에 온다)
+    const thinking = setTimeout(() => setNotice({ kind: 'ok', text: '상대가 생각하는 중…' }), 150);
     try {
       const res = await api.playWord(game.id, word);
+      clearTimeout(thinking);
       const input = $('word');
       if (res.reject) {
         show(res, res.reject.code === 'timeout' ? lifeNotice(res.game) || { kind: 'bad', text: res.reject.message }
@@ -576,9 +585,10 @@ function App() {
       }
       input.value = '';
       show(res, lifeNotice(res.game) || (res.game.status === 'playing' && res.computer
-        ? { kind: 'ok', text: "상대가 '" + res.computer.word + "'(으)로 받았습니다" + (res.computer.finisher ? ' (끝내기 단어)' : '') } : null));
+        ? { kind: 'ok', text: '상대가 ' + (res.computer.thinkMs ? seconds(res.computer.thinkMs) + ' 생각하고 ' : '') + "'" + res.computer.word + "'(으)로 받았습니다" + (res.computer.finisher ? ' (끝내기 단어)' : '') } : null));
       if (res.game.status === 'playing') input.focus();
-    } catch (err) { fail(err); }
+    } catch (err) { clearTimeout(thinking); fail(err); }
+    finally { setWaiting(false); }
   }
 
   const on = {

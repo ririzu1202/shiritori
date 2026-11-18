@@ -14,6 +14,7 @@
  *   선공      : 판의 첫 라운드는 무작위로 정하고, 그 뒤로는 목숨을 잃은 쪽이 다음 라운드를 먼저 낸다. 라운드의 첫 단어로는 한방 단어를 낼 수 없다
  *   목숨      : 판마다 1~5개 중에서 고르고 (기본 3개, LIVES), 플레이어와 상대가 같은 수를 갖는다. 이을 단어를 내지 못한 쪽이 하나를 잃고, 새 시작 단어로 이어 간다.
  *               어느 한쪽의 목숨이 0 이 되면 판이 끝난다
+ *   생각 시간 : 상대는 남은 라운드 시간이 넉넉하면 0.5~1초, 거의 없으면 0.1~0.2초 생각한 뒤 낸다 (thinkTime). 생각한 시간도 라운드 시간에서 빠진다
  *   상대      : 후보를 등급별로 나누고, 센 등급(한방)부터 차례로 "이 등급을 낸다"를 난이도 확률로 굴린다 (pickWord).
  *               성공하면 그 등급 안에서 무작위로 하나, 넉넉까지 모두 실패하면 남은 것 중 가장 약한 등급에서 낸다
  *                 한 단계 확률 (FINISHER_CHANCE): easy 0% (끝내기 단어를 쓰지 않음) · mild 25% · normal 50% · tough 75% · hard 100% (가장 센 등급)
@@ -38,12 +39,24 @@ export const LONG_WORD = { length: 10, points: 300, perExtra: 60 };   // 긴 단
 /** 글자 수에 따라 등급 점수에 더해 주는 점수. 9글자까지는 10글자 점수(300)에 대한 비율의 제곱이라 길수록 가파르게 오른다: 2글자 12, 5글자 75, 9글자 243, 10글자 300, 11글자 360, 12글자 420 … (시작 단어는 0점) */
 export const letterPoints = (length) => length < LONG_WORD.length ? Math.round(LONG_WORD.points * (length / LONG_WORD.length) ** 2) : LONG_WORD.points + (length - LONG_WORD.length) * LONG_WORD.perExtra;
 // 라운드 시간(초): 끄투의 라운드 시간 선택지를 따른다 (JJoriping/KKuTu Server/lib/Web/views/kkutu.pug 의 select#room-time: 10 · 30 · 60(기본) · 90 · 120 · 150, 한국어 끝말잇기는 배수 1). 새 시작 단어부터 누군가 목숨을 잃을 때까지가 한 라운드다.
-//   플레이어 차례에 쓴 시간만큼 줄고 (상대는 바로 받아치므로 상대 시간은 0), 다 쓰면 그때 차례인 플레이어가 목숨을 잃는다.
+//   플레이어 차례에 쓴 시간과 상대가 생각한 시간만큼 줄고, 다 쓰면 그때 차례인 쪽이 목숨을 잃는다 (상대가 생각하는 중이면 상대).
 //   그래서 서로 넉넉한 단어만 주고받아도 라운드가 끝없이 이어지지 않는다
 export const ROUND_TIMES = [10, 30, 60, 90, 120, 150];
 export const DEFAULT_ROUND = 60;
 export const LIVES = 3;                  // 플레이어와 상대가 각각 갖는 목숨 수 (판을 시작할 때 고르지 않으면)
 export const MAX_LIVES = 5;              // 고를 수 있는 목숨 수: 1 ~ 5
+
+// 상대의 생각 시간(ms): 남은 라운드 시간이 easeMs(10초, 한 차례 제한 시간) 이상이면 slow 범위, 0 에 가까울수록 fast 범위.
+//   그 사이는 남은 시간에 비례해 두 범위를 섞는다. 사람처럼 시간이 넉넉하면 천천히, 쫓기면 빨리 낸다
+export const THINK = { slow: [500, 1000], fast: [100, 200], easeMs: 10_000 };
+
+/** 남은 라운드 시간(ms) → 상대가 생각할 시간(ms). 범위 안의 값을 random() 으로 고른다. 10초 이상 → 500~1000, 5초 → 300~600, 0초 → 100~200 */
+export function thinkTime(roundLeftMs, random = Math.random) {
+  const ease = Math.min(1, Math.max(0, roundLeftMs / THINK.easeMs));
+  const low = THINK.fast[0] + (THINK.slow[0] - THINK.fast[0]) * ease;
+  const high = THINK.fast[1] + (THINK.slow[1] - THINK.fast[1]) * ease;
+  return Math.round(low + (high - low) * random());
+}
 
 export const firstChar = (word) => word[0];
 export const lastChar = (word) => word[word.length - 1];
