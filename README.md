@@ -125,11 +125,11 @@ buckets (capacity = 16)
 
 | | `Map` (V8) | `Object` (V8) | 이 프로젝트 `HashTable` |
 |---|---|---|---|
-| 안쪽 구조 | 버킷 배열 + 넣은 순서대로 쌓는 항목 배열. 버킷은 첫 항목의 번호만 들고, 같은 버킷 항목끼리는 `chain` 으로 잇는다 | 보통은 숨은 클래스(Hidden Class)가 속성마다 자리를 정해 두고 그 칸에서 읽는다. 속성을 자주 넣고 지우면 사전 모드(Dictionary Mode, 해시 테이블)로 바뀐다 | 버킷 배열 + 노드 `{ key, value, next }` 연결 리스트 |
+| 안쪽  구조 | 버킷 배열 + 넣은 순서대로 쌓는 항목 배열. 버킷은 첫 항목의 번호만 들고, 같은 버킷 항목끼리는 `chain` 으로 잇는다 | 보통은 숨은 클래스(Hidden Class)가 속성마다 자리를 정해 두고 그 칸에서 읽는다. 속성을 자주 넣고 지우면 사전 모드(Dictionary Mode, 해시 테이블)로 바뀐다 | 버킷 배열 + 노드 `{ key, value, next }` 연결 리스트 |
 | 해시 · 충돌 · 크기 조절 | 엔진(C++) 안에 있어 JS 에서 보거나 바꿀 수 없다 | 같음 | FNV-1a, `next` 체인, 0.75 → 2배 · 0.125 → 절반을 JS 코드로 직접 정한다 |
-| 순회 순서 | 넣은 순서 | 규칙이 복잡하다 (키 종류에 따라 다름) | 버킷 번호 순서 |
+| 순회  순서 | 넣은 순서 | 규칙이 복잡하다 (키 종류에 따라 다름) | 버킷 번호 순서 |
 | 키 | 아무 값 | 문자열 · 심볼. 프로토타입이 가진 키와 겹칠 수 있다 | 문자열 |
-| 상태 보기 | 버킷 수 · 체인 길이를 볼 수 없다 | 볼 수 없다 | `stats()` 가 capacity · 적재율 · 쓰는 버킷 수 · 가장 긴 체인을 돌려준다 (`GET /api/status`) |
+| 상태  보기 | 버킷 수 · 체인 길이를 볼 수 없다 | 볼 수 없다 | `stats()` 가 capacity · 적재율 · 쓰는 버킷 수 · 가장 긴 체인을 돌려준다 (`GET /api/status`) |
 
 <sub>출처 (2026-11-18 확인): [V8 ordered-hash-table.h](https://chromium.googlesource.com/v8/v8/+/main/src/objects/ordered-hash-table.h) · [V8 블로그: Fast properties](https://v8.dev/blog/fast-properties) · [MDN: Map 과 Object 비교](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Map)</sub>
 
