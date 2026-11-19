@@ -188,14 +188,14 @@ test('글자 수 점수: 9글자까지는 10글자(300)에 대한 비율의 제�
   for (const [length, points] of cases) assert.equal(letterPoints(length), points, String(length));
 });
 
-test('thinkTime: 남은 라운드 시간이 넉넉하면 0.5~1초, 0 에 가까울수록 0.1~0.2초 (그 사이는 비례)', () => {
-  assert.deepEqual(THINK, { slow: [500, 1000], fast: [100, 200], easeMs: 10_000 });
+test('thinkTime: 남은 라운드 시간이 넉넉하면 0.5~1초, 0 에 가까울수록 0.2~0.3초 (그 사이는 비례)', () => {
+  assert.deepEqual(THINK, { slow: [500, 1000], fast: [200, 300], easeMs: 10_000 });
   const range = (left) => [thinkTime(left, () => 0), thinkTime(left, () => 1)];
   assert.deepEqual(range(150_000), [500, 1000]);
   assert.deepEqual(range(10_000), [500, 1000]);
-  assert.deepEqual(range(5_000), [300, 600]);
-  assert.deepEqual(range(1_000), [140, 280]);
-  assert.deepEqual(range(0), [100, 200]);
-  assert.deepEqual(range(-5), [100, 200]);
+  assert.deepEqual(range(5_000), [350, 650]);
+  assert.deepEqual(range(1_000), [230, 370]);
+  assert.deepEqual(range(0), [200, 300]);
+  assert.deepEqual(range(-5), [200, 300]);
   assert.equal(thinkTime(10_000, () => 0.5), 750);
 });

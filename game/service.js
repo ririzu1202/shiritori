@@ -7,13 +7,13 @@
  *                                                 ranking                 기록 상위 10개 캐시           5초
  *                                                 game:<번호>             진행 중인 판의 상태 (목숨, 점수, 낸 단어)  30분
  *                                                 game:<번호>:used:<단어>  이번 라운드에 나온 단어       30분 (새 라운드에 지움)
- *                                                 game:<번호>:turn        지금 차례. 플레이어 차례면 사라질 때 시간 초과(10초), 상대 차례면 생각이 끝남(0.1~1초)
+ *                                                 game:<번호>:turn        지금 차례. 플레이어 차례면 사라질 때 시간 초과(10초), 상대 차례면 생각이 끝남(0.2~1초)
  *                                                 game:<번호>:lock        한 판을 한 번에 한 요청만 다루게 하는 잠금 (nx)
  *                                                 game:seq / stats:games  판 번호 / 끝난 판 수 (incr)
  *
  *   단어 확인   : 캐시(word:…)에 있으면 그대로, 없으면 DBMS 를 선형 탐색하고 결과를 캐시에 넣는다
  *   단어 등록   : DBMS 에 INSERT 한 뒤 word:<단어> 와 first:<첫 글자> 캐시를 지운다 (무효화)
- *   상대의 생각 : 내 단어는 바로 받아들이고, 상대 차례를 연다. 남은 라운드 시간에 따라 생각할 시간(0.1~1초, rules.js thinkTime)을
+ *   상대의 생각 : 내 단어는 바로 받아들이고, 상대 차례를 연다. 남은 라운드 시간에 따라 생각할 시간(0.2~1초, rules.js thinkTime)을
  *                 차례 키(game:<번호>:turn)의 TTL 로 걸고, 키가 사라진 뒤 처음 오는 요청에서 상대가 둔다 (시간 초과와 같은 방식).
  *                 생각한 시간도 라운드 시간에서 빠지고, 생각하는 동안 라운드 시간이 다 되면 상대가 목숨을 잃는다
  *   상대의 선택 : 후보마다 등급을 매겨 센 등급부터 확률을 굴린다 (rules.js pickWord). 등급은 메모리의 등급 표(글자 → 단어 수)로 매긴다.
@@ -312,7 +312,7 @@ export function createGameService({ redis, db, turnMs = 10_000, random = Math.ra
   }
 
   /**
-   * 상대 차례를 연다: 남은 라운드 시간에 따라 생각할 시간을 정하고(rules.js thinkTime: 넉넉하면 0.5~1초, 거의 없으면 0.1~0.2초)
+   * 상대 차례를 연다: 남은 라운드 시간에 따라 생각할 시간을 정하고(rules.js thinkTime: 넉넉하면 0.5~1초, 거의 없으면 0.2~0.3초)
    * 그 시간을 차례 키의 TTL 로 건다. 키가 사라진 뒤 처음 오는 요청(get · play)에서 상대가 둔다 (computerReply).
    * 그래서 내 단어는 이 요청에서 바로 들어가고, 상대의 단어는 생각 시간이 지난 뒤에 나온다.
    * 생각을 마치기 전에 라운드 시간이 끝나면(thinkLate) 키는 라운드가 끝나는 때 사라지고, 상대가 'round-time' 으로 목숨을 잃는다.
@@ -342,7 +342,7 @@ export function createGameService({ redis, db, turnMs = 10_000, random = Math.ra
     const spent = state.thinkMs ?? 0;
     if (state.roundLeftMs !== undefined) state.roundLeftMs = Math.max(0, state.roundLeftMs - spent);
     state.turn = 'player';
-    trace.push({ label: state.thinkLate ? '상대가 생각하는 동안 라운드 시간이 다 됨' : '상대가 생각한 시간 (남은 라운드 시간에 따라 0.1~1초)', key: turnKey(state.id), source: 'think', plan: null, ms: spent });
+    trace.push({ label: state.thinkLate ? '상대가 생각하는 동안 라운드 시간이 다 됨' : '상대가 생각한 시간 (남은 라운드 시간에 따라 0.2~1초)', key: turnKey(state.id), source: 'think', plan: null, ms: spent });
     if (state.thinkLate) { await loseLife(state, 'computer', 'round-time', trace); return null; }
 
     const usedWords = await usedWordsOf(state.id);
